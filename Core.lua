@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.0.0"
+PRT.VERSION = "1.1.0"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -92,6 +92,163 @@ function PRT.Trim(s)
     return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
 end
 
+function PRT:GetHomeRealmName()
+    local realm = GetRealmName and GetRealmName() or ""
+    realm = self.Trim(realm)
+    if realm == "" and GetNormalizedRealmName then
+        realm = self.Trim(GetNormalizedRealmName() or "")
+    end
+    return realm
+end
+
+function PRT.NormalizeRealmName(realm)
+    realm = PRT.Trim(realm or "")
+    if realm == "" then return "" end
+    realm = string.lower(realm)
+    realm = realm:gsub("[%s%p_]+", "")
+    return realm
+end
+
+function PRT:SplitNameRealm(fullName, fillHomeRealm)
+    local raw = self.Trim(fullName or "")
+    raw = raw:gsub('^"+', ""):gsub('"+$', "")
+    raw = raw:gsub("^'+", ""):gsub("'+$", "")
+    if raw == "" then
+        return "", ""
+    end
+
+    local name, realm = raw:match("^(.-)%-(.+)$")
+    if not name then
+        name = raw
+        realm = ""
+    end
+
+    name = self.Trim(name)
+    realm = self.Trim(realm or "")
+
+    if fillHomeRealm and name ~= "" and realm == "" then
+        realm = self:GetHomeRealmName()
+    end
+
+    return name, realm
+end
+
+function PRT:MakeCharacterFullName(name, realm, forceRealm)
+    name = self.Trim(name or "")
+    realm = self.Trim(realm or "")
+    if name == "" then return "" end
+    if realm == "" then return name end
+    if not forceRealm
+        and self.NormalizeRealmName(realm) == self.NormalizeRealmName(self:GetHomeRealmName()) then
+        return name
+    end
+    return name .. "-" .. realm
+end
+
+function PRT:MakePlayerIdentityKey(name, realm)
+    name = self.Trim(name or "")
+    realm = self.Trim(realm or "")
+    if name == "" then return "" end
+
+    local baseName, embeddedRealm = self:SplitNameRealm(name, false)
+    if embeddedRealm ~= "" then
+        name = baseName
+        realm = embeddedRealm
+    end
+
+    return string.lower(name) .. "@" .. self.NormalizeRealmName(realm)
+end
+
+-- Unsuffixed saved names represent characters on the user's current realm.
+function PRT:GetPlayerIdentityKey(fullName)
+    local name, realm = self:SplitNameRealm(fullName, true)
+    return self:MakePlayerIdentityKey(name, realm)
+end
+
+-- GetRaidRosterInfo normally includes remote realms, but UnitFullName is used
+-- as a fallback so cross-realm identity remains intact on clients that omit it.
+function PRT:GetRaidMemberIdentity(raidIndex, rosterName)
+    local name, realm = self:SplitNameRealm(rosterName, false)
+    if realm == "" and raidIndex and UnitFullName then
+        local unitName, unitRealm = UnitFullName("raid" .. raidIndex)
+        if unitName and unitName ~= "" then
+            local unitBaseName, embeddedRealm = self:SplitNameRealm(unitName, false)
+            name = unitBaseName
+            if embeddedRealm ~= "" then
+                realm = embeddedRealm
+            end
+        end
+        if unitRealm and unitRealm ~= "" then
+            realm = unitRealm
+        end
+    end
+    if realm == "" and name ~= "" then
+        realm = self:GetHomeRealmName()
+    end
+    return name, realm
+end
+
+function PRT:GetRaidMemberIdentityKey(raidIndex, rosterName)
+    local name, realm = self:GetRaidMemberIdentity(raidIndex, rosterName)
+    return self:MakePlayerIdentityKey(name, realm)
+end
+
+function PRT:GetUnitIdentity(unit)
+    local name, realm
+    if UnitFullName then
+        name, realm = UnitFullName(unit)
+    end
+    if (not name or name == "") and UnitName then
+        name, realm = UnitName(unit)
+    end
+
+    name = self.Trim(name or "")
+    realm = self.Trim(realm or "")
+    local baseName, embeddedRealm = self:SplitNameRealm(name, false)
+    if embeddedRealm ~= "" then
+        name = baseName
+        realm = embeddedRealm
+    end
+    if name ~= "" and realm == "" then
+        realm = self:GetHomeRealmName()
+    end
+    return name, realm
+end
+
+function PRT:GetUnitIdentityKey(unit)
+    local name, realm = self:GetUnitIdentity(unit)
+    return self:MakePlayerIdentityKey(name, realm)
+end
+
+function PRT:FindRaidUnitByIdentityKey(identityKey)
+    if not identityKey or identityKey == "" then return nil end
+
+    local count = GetNumGroupMembers()
+    local sawUnitIdentity = false
+    for raidIndex = 1, count do
+        local unit = "raid" .. raidIndex
+        local unitIdentityKey = self:GetUnitIdentityKey(unit)
+        if unitIdentityKey ~= "" then
+            sawUnitIdentity = true
+        end
+        if unitIdentityKey == identityKey then
+            return unit, raidIndex
+        end
+    end
+
+    -- Avoid pairing a partially rebuilt roster index with a different raidN
+    -- token.
+    if sawUnitIdentity then return nil end
+
+    -- Compatibility fallback when this client exposes no unit identities.
+    for raidIndex = 1, count do
+        local rosterName = GetRaidRosterInfo(raidIndex)
+        if rosterName and self:GetRaidMemberIdentityKey(raidIndex, rosterName) == identityKey then
+            return "raid" .. raidIndex, raidIndex
+        end
+    end
+end
+
 function PRT.Print(...)
     local n = select("#", ...)
     local t = {}
@@ -118,17 +275,21 @@ function PRT.GetClassColor(classFile)
     return 1, 1, 1
 end
 
--- Returns table of canonName -> { name, classFile, subgroup, index }
+-- Returns table of realm-aware identity key -> raid member information.
 function PRT.GetRaidRoster()
     local roster = {}
     local n = GetNumGroupMembers()
     for i = 1, n do
         local name, _, subgroup, _, _, classFile = GetRaidRosterInfo(i)
         if name and subgroup then
-            local key = PRT.CanonName(name)
+            local baseName, realm = PRT:GetRaidMemberIdentity(i, name)
+            local key = PRT:MakePlayerIdentityKey(baseName, realm)
             if key ~= "" then
                 roster[key] = {
                     name = name,
+                    baseName = baseName,
+                    realm = realm,
+                    displayName = PRT:MakeCharacterFullName(baseName, realm, false),
                     classFile = classFile,
                     subgroup = subgroup,
                     index = i,
@@ -370,7 +531,7 @@ function PRT:BuildTarget(roster)
         local g = math.floor((i - 1) / 5) + 1
         local s = ((i - 1) % 5) + 1
         if g >= 1 and g <= 8 then
-            target[g][s][self.RR_NAME] = self.CanonName(name)
+            target[g][s][self.RR_NAME] = self:GetPlayerIdentityKey(name)
         end
     end
     return target
@@ -735,6 +896,8 @@ function PRT:ExportMarkRule(mg)
     lines[#lines + 1] = "smartComp=" .. (mg.smartComp or "")
     lines[#lines + 1] = "unmarkAll=" .. tostring(mg.unmarkAll and true or false)
     lines[#lines + 1] = "repeatable=" .. tostring(mg.repeatable and true or false)
+    lines[#lines + 1] = "retryUnavailable=" .. tostring(mg.retryUnavailable and true or false)
+    lines[#lines + 1] = "retryDuration=" .. tostring(tonumber(mg.retryDuration) or 3)
     lines[#lines + 1] = "triggerMode=" .. (mg.triggerMode or "any")
     if mg.note and mg.note ~= "" then
         -- Escape embedded newlines so note fits on one key=value line
@@ -810,6 +973,8 @@ function PRT:ParseMarkRuleString(raw)
                     smartComp    = "",
                     unmarkAll    = false,
                     repeatable   = false,
+                    retryUnavailable = false,
+                    retryDuration = 3,
                     triggerMode  = "any",
                     marks        = {},
                     npcTriggers  = {},
@@ -826,6 +991,8 @@ function PRT:ParseMarkRuleString(raw)
                     elseif key == "smartComp" then   cur.smartComp   = val
                     elseif key == "unmarkAll" then   cur.unmarkAll   = (val == "true")
                     elseif key == "repeatable" then  cur.repeatable  = (val == "true")
+                    elseif key == "retryUnavailable" then cur.retryUnavailable = (val == "true")
+                    elseif key == "retryDuration" then cur.retryDuration = tonumber(val) or 3
                     elseif key == "triggerMode" then  cur.triggerMode = val
                     elseif key == "note" then         cur.note = val:gsub("\\n", "\n")
                     end
@@ -1136,6 +1303,7 @@ initFrame:SetScript("OnEvent", function(self, event, addon)
     PRT.Print("v" .. PRT.VERSION .. " loaded. Type /prt to open.")
 
     if PRT.InitReorder then PRT:InitReorder() end
+    if PRT.InitPositionSort then PRT:InitPositionSort() end
     if PRT.InitAutoSwap then PRT:InitAutoSwap() end
     if PRT.InitAutoMark then PRT:InitAutoMark() end
     if PRT.InitTargetMarks then PRT:InitTargetMarks() end
@@ -1281,6 +1449,13 @@ SlashCmdList["PRT"] = function(msg)
         end
     elseif msg == "markreset" then
         if PRT.ResetAutoMarkCounters then PRT:ResetAutoMarkCounters() end
+    elseif msg == "sortlog" or msg == "sort log" then
+        if PRT.ShowPositionSortLog then PRT:ShowPositionSortLog() end
+    elseif msg == "sortlog clear" or msg == "sort log clear" then
+        if PRT.ClearPositionSortLog then
+            PRT:ClearPositionSortLog()
+            PRT.Print("Position sort log cleared.")
+        end
     elseif msg == "help" then
         PRT.Print("Commands:")
         PRT.Print("  /prt - Toggle config window")
@@ -1297,6 +1472,8 @@ SlashCmdList["PRT"] = function(msg)
         PRT.Print("  /prt targetmarks on - Enable Target Marks")
         PRT.Print("  /prt targetmarks off - Disable Target Marks")
         PRT.Print("  /prt markreset - Reset auto-mark kill counters")
+        PRT.Print("  /prt sortlog - Open the position sort event log")
+        PRT.Print("  /prt sortlog clear - Clear the position sort event log")
         PRT.Print("  /prt who charactername - Show the alias for a stored character")
         PRT.Print("  /prt alias aliasname - List characters stored under an alias")
         PRT.Print("  /prt help - Show this help")

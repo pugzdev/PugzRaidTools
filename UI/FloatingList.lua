@@ -1,8 +1,8 @@
 ---------------------------------------------------------------------------
 -- PugzRaidTools - Floating Group List
 -- Moveable, lockable frame that shows composition names as click-to-swap
--- buttons.  Left-click = apply groups.  Right-click / shift-click = dump
--- a tooltip of missing / extra players.
+-- buttons. Left-click applies group membership quickly; Shift + Left Click
+-- also sorts exact positions. Right-click prints the composition name.
 ---------------------------------------------------------------------------
 local _, PRT = ...
 local W = PRT.UI
@@ -19,16 +19,25 @@ local COL_OFF_HOV = { 0.62, 0.15, 0.15, 0.95 }
 ---------------------------------------------------------------------------
 -- Tooltip (shared)
 ---------------------------------------------------------------------------
+local function AddSortInstructions()
+    GameTooltip:AddLine(
+        "|cff59ff8cLeft Click|r - Fast group sort.",
+        1, 1, 1)
+    GameTooltip:AddLine(
+        "|cff73cfffShift + Left Click|r - Exact position sort.",
+        1, 1, 1)
+end
+
 local function ShowCompTooltip(btn, compName)
     local comp = PRT:GetComp(compName)
     if not comp then return end
 
     local rosterSet, pretty = {}, {}
     for _, w in ipairs(comp.roster or {}) do
-        local k = PRT.CanonName(w)
+        local k = PRT:GetPlayerIdentityKey(w)
         if k ~= "" then
             rosterSet[k] = true
-            if not pretty[k] then pretty[k] = PRT.StripRealm(w) end
+            if not pretty[k] then pretty[k] = PRT.Trim(w) end
         end
     end
 
@@ -41,7 +50,7 @@ local function ShowCompTooltip(btn, compName)
     for k, info in pairs(raid) do
         if not rosterSet[k] then
             extra[#extra + 1] = {
-                name = PRT.StripRealm(info.name),
+                name = info.displayName or info.name,
                 group = info.subgroup or 0,
                 classFile = info.classFile,
             }
@@ -59,7 +68,7 @@ local function ShowCompTooltip(btn, compName)
     if #missing == 0 and #extra == 0 then
         GameTooltip:AddLine(compName, 1, 1, 1)
         GameTooltip:AddLine("All roster members present.", 0.6, 1, 0.6)
-        GameTooltip:AddLine("Shift + Left Click to force positions.", 0.8, 0.8, 0.8)
+        AddSortInstructions()
         GameTooltip:Show()
         return
     end
@@ -81,7 +90,7 @@ local function ShowCompTooltip(btn, compName)
     if longest > cap then
         GameTooltip:AddDoubleLine("...", "...", 0.5, 0.5, 0.5, 0.5, 0.5, 0.5)
     end
-    GameTooltip:AddLine("Shift + Left Click to force positions.", 0.8, 0.8, 0.8)
+    AddSortInstructions()
     GameTooltip:Show()
 end
 

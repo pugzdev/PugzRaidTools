@@ -408,50 +408,6 @@ function PRT:GetRosterMatcherClassOptions()
     return CLASS_OPTIONS
 end
 
-function PRT:GetHomeRealmName()
-    local realm = GetRealmName and GetRealmName() or ""
-    realm = PRT.Trim(realm)
-    if realm == "" and GetNormalizedRealmName then
-        realm = PRT.Trim(GetNormalizedRealmName() or "")
-    end
-    return realm
-end
-
-function PRT:SplitNameRealm(fullName, fillHomeRealm)
-    local raw = PRT.Trim(fullName or "")
-    raw = raw:gsub('^"+', ""):gsub('"+$', "")
-    raw = raw:gsub("^'+", ""):gsub("'+$", "")
-    if raw == "" then
-        return "", ""
-    end
-
-    local name, realm = raw:match("^(.-)%-(.+)$")
-    if not name then
-        name = raw
-        realm = ""
-    end
-
-    name = PRT.Trim(name)
-    realm = PRT.Trim(realm or "")
-
-    if fillHomeRealm and name ~= "" and realm == "" then
-        realm = self:GetHomeRealmName()
-    end
-
-    return name, realm
-end
-
-function PRT:MakeCharacterFullName(name, realm, forceRealm)
-    name = PRT.Trim(name or "")
-    realm = PRT.Trim(realm or "")
-    if name == "" then return "" end
-    if realm == "" then return name end
-    if not forceRealm and NormalizeRealm(realm) == NormalizeRealm(self:GetHomeRealmName()) then
-        return name
-    end
-    return name .. "-" .. realm
-end
-
 function PRT:NormalizeMatchText(text)
     return NormalizeName(text)
 end
@@ -462,7 +418,7 @@ function PRT:GetDetailedRaidRoster()
     for raidIndex = 1, count do
         local rawName, _, subgroup, _, _, classFile = GetRaidRosterInfo(raidIndex)
         if rawName and subgroup then
-            local name, realm = self:SplitNameRealm(rawName, true)
+            local name, realm = self:GetRaidMemberIdentity(raidIndex, rawName)
             local baseNorm = NormalizeName(name)
             if baseNorm ~= "" then
                 roster[#roster + 1] = {

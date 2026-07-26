@@ -67,6 +67,14 @@ for _, mi in ipairs(PRT.MARK_ICONS) do
     end
 end
 
+local RETRY_DURATION_ITEMS = {
+    { text = "1 second",  value = 1  },
+    { text = "2 seconds", value = 2  },
+    { text = "3 seconds", value = 3  },
+    { text = "5 seconds", value = 5  },
+    { text = "10 seconds", value = 10 },
+}
+
 ---------------------------------------------------------------------------
 -- Section box helpers — textures on the dc frame itself (BACKGROUND/BORDER
 -- draw layers always render behind ARTWORK/OVERLAY child content on the
@@ -211,6 +219,19 @@ function PRT:BuildAutoMarkTab()
         "Create presets containing Marking Rules — each rule defines what marks to apply and what triggers them."
     )
 
+    local apiWarning = W.CreateDescription(panel, nil, {
+        width = 576,
+        fontSize = PRT.FONT_SIZE - 1,
+        color = { 1, 0.72, 0.35, 1 },
+    })
+    apiWarning:SetPoint("TOPLEFT", 12, -66)
+    apiWarning:SetPoint("TOPRIGHT", -12, -66)
+    apiWarning:SetText(
+        "|cFFFF5555Warning:|r Classic Era 1.15.9 may not expose remote raid members outside the raid leader's "..
+        "subgroup to automatic marking. Enable \"Retry unavailable players\" per rule; persistently unavailable "..
+        "players cannot be marked."
+    )
+
     local enableCB = W.CreateCheckbox(panel, "Enable Auto Marking", function(checked)
         local db = PRT:GetDB()
         db.autoMark.enabled = checked
@@ -218,11 +239,11 @@ function PRT:BuildAutoMarkTab()
         if PRT.RefreshFeatureToggleUI then PRT:RefreshFeatureToggleUI() end
         if PRT.ShowManualFeatureToggleNotification then PRT:ShowManualFeatureToggleNotification("automark") end
     end)
-    enableCB:SetPoint("TOPLEFT", 12, -66)
+    enableCB:SetPoint("TOPLEFT", 12, -106)
 
     local presetLabel = W.CreateLabel(panel, "Active Preset:", PRT.FONT_SIZE,
         PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3])
-    presetLabel:SetPoint("TOPLEFT", 12, -92)
+    presetLabel:SetPoint("TOPLEFT", 12, -132)
 
     local presetDD = W.CreateDropdown(panel, 180, {}, function(value)
         local db = PRT:GetDB()
@@ -235,7 +256,7 @@ function PRT:BuildAutoMarkTab()
         panel:RefreshRules()
         if PRT.UpdateAutoMarkListeners then PRT:UpdateAutoMarkListeners() end
     end)
-    presetDD:SetPoint("TOPLEFT", 12, -108)
+    presetDD:SetPoint("TOPLEFT", 12, -148)
 
     local btnNewPreset = W.CreateButton(panel, "+ New", 55, 22)
     btnNewPreset:SetPoint("LEFT", presetDD, "RIGHT", 6, 0)
@@ -390,10 +411,10 @@ function PRT:BuildAutoMarkTab()
 
     local loadCondLabel = W.CreateLabel(panel, "Preset Load Conditions:", PRT.FONT_SIZE,
         PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3])
-    loadCondLabel:SetPoint("TOPLEFT", 12, -138)
+    loadCondLabel:SetPoint("TOPLEFT", 12, -178)
 
     local instLabel = W.CreateLabel(panel, "Active in instance:", PRT.FONT_SIZE, 0.8, 0.8, 0.8)
-    instLabel:SetPoint("TOPLEFT", 12, -162)
+    instLabel:SetPoint("TOPLEFT", 12, -202)
 
     local instItems = {}
     for _, info in ipairs(PRT.RAID_INSTANCES) do
@@ -407,7 +428,7 @@ function PRT:BuildAutoMarkTab()
             if PRT.UpdateAutoMarkListeners then PRT:UpdateAutoMarkListeners() end
         end
     end)
-    instDD:SetPoint("TOPLEFT", 126, -158)
+    instDD:SetPoint("TOPLEFT", 126, -198)
 
     local anywhereCB = W.CreateCheckbox(panel,
         "Allow outside of instance/raid (for testing — fires CLEU everywhere)",
@@ -418,18 +439,18 @@ function PRT:BuildAutoMarkTab()
                 if PRT.UpdateAutoMarkListeners then PRT:UpdateAutoMarkListeners() end
             end
         end)
-    anywhereCB:SetPoint("TOPLEFT", 318, -158)
+    anywhereCB:SetPoint("TOPLEFT", 318, -198)
 
     local divider = panel:CreateTexture(nil, "ARTWORK")
-    divider:SetPoint("TOPLEFT",  12, -190)
-    divider:SetPoint("TOPRIGHT", -12, -190)
+    divider:SetPoint("TOPLEFT",  12, -230)
+    divider:SetPoint("TOPRIGHT", -12, -230)
     divider:SetHeight(1)
     divider:SetColorTexture(PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3], 0.5)
 
     ---------------------------------------------------------------------------
     -- Left panel: Marking Rules list
     ---------------------------------------------------------------------------
-    local LEFT_TOP = -198
+    local LEFT_TOP = -238
     local RIGHT_X  = 12 + RULE_LIST_W + 8   -- 190
 
     local ruleListHdr = W.CreateHeader(panel, "Marking Rules")
@@ -458,6 +479,8 @@ function PRT:BuildAutoMarkTab()
             smartComp    = "",
             unmarkAll    = false,
             repeatable   = false,
+            retryUnavailable = false,
+            retryDuration = 3,
             triggerMode  = "any",
             marks        = {},
             npcTriggers  = {},
@@ -635,6 +658,44 @@ function PRT:BuildAutoMarkTab()
         end
     end)
 
+    d.retryCB = W.CreateCheckbox(dc, "Retry unavailable players", function(checked)
+        local preset = GetActivePreset()
+        if preset and panel.selectedRule then
+            preset.markGroups[panel.selectedRule].retryUnavailable = checked
+            panel:RefreshRuleDetails()
+        end
+    end)
+    d.retryDurationLabel = W.CreateLabel(dc, "Retry for:", PRT.FONT_SIZE, 0.8, 0.8, 0.8)
+    d.retryDurationDD = W.CreateDropdown(dc, 100, RETRY_DURATION_ITEMS, function(val)
+        local preset = GetActivePreset()
+        if preset and panel.selectedRule then
+            preset.markGroups[panel.selectedRule].retryDuration = tonumber(val) or 3
+        end
+    end)
+
+    local retryTooltip = {
+        anchor = "ANCHOR_RIGHT",
+        title = "Retry unavailable players",
+        titleColor = { 1, 0.82, 0, 1 },
+        lines = {
+            {
+                "Since the WoW Classic Era 1.15.9 update in July 2026, raid marker API calls can silently fail when a raid member is not currently addressable to the raid leader's client. This is most often seen when a player is distant, in another zone, or temporarily unavailable while raid groups are changing.",
+                1, 1, 1, true,
+            },
+            {
+                "When enabled, PRT applies this rule immediately to available players, then keeps failed assignments in a short pending queue and retries until the selected duration expires.",
+                1, 1, 1, true,
+            },
+            {
+                "This cannot mark a player who remains unavailable for the full retry duration.",
+                1, 0.55, 0.35, true,
+            },
+        },
+    }
+    d.retryCB:EnableMouse(true)
+    W.AttachTooltip(d.retryCB, retryTooltip)
+    W.AttachTooltip(d.retryCB.check, retryTooltip)
+
     -- Marks section
     d.marksHdr  = W.CreateHeader(dc, "Marks")
     d.marksDesc = W.CreateDescription(dc, nil, {
@@ -800,9 +861,9 @@ function PRT:BuildAutoMarkTab()
             if mg.smartComp ~= "" then
                 local comp = PRT:GetComp(mg.smartComp)
                 if comp then
-                    local canon = PRT.CanonName(val)
+                    local identityKey = PRT:GetPlayerIdentityKey(val)
                     for pos = 1, 40 do
-                        if PRT.CanonName(comp.roster[pos] or "") == canon then
+                        if PRT:GetPlayerIdentityKey(comp.roster[pos] or "") == identityKey then
                             mg.marks[row._idx].position = pos; break
                         end
                     end
@@ -1164,6 +1225,9 @@ function PRT:BuildAutoMarkTab()
         local mg = nil
         if preset and self.selectedRule then
             mg = preset.markGroups[self.selectedRule]
+            if mg and PRT.EnsureAutoMarkRuleDefaults then
+                PRT:EnsureAutoMarkRuleDefaults(mg)
+            end
         end
 
         for _, r in ipairs(self.markRows)     do r:Hide() end
@@ -1286,7 +1350,7 @@ function PRT:BuildAutoMarkTab()
         end
 
         -----------------------------------------------------------------
-        -- Unmark All + Repeatable rows
+        -- Unmark All + Repeatable + unavailable-player retry rows
         -----------------------------------------------------------------
         d.unmarkCB:ClearAllPoints()
         d.unmarkCB:SetPoint("TOPLEFT", dc, "TOPLEFT", INSET, y)
@@ -1298,6 +1362,26 @@ function PRT:BuildAutoMarkTab()
         d.repeatCB:SetPoint("TOPLEFT", dc, "TOPLEFT", INSET, y)
         d.repeatCB:SetChecked(mg.repeatable or false)
         d.repeatCB:Show()
+        y = y - 26
+
+        d.retryCB:ClearAllPoints()
+        d.retryCB:SetPoint("TOPLEFT", dc, "TOPLEFT", INSET, y)
+        d.retryCB:SetChecked(mg.retryUnavailable or false)
+        d.retryCB:Show()
+
+        if mg.retryUnavailable then
+            d.retryDurationLabel:ClearAllPoints()
+            d.retryDurationLabel:SetPoint("LEFT", d.retryCB, "RIGHT", 8, 0)
+            d.retryDurationLabel:Show()
+
+            d.retryDurationDD:ClearAllPoints()
+            d.retryDurationDD:SetPoint("LEFT", d.retryDurationLabel, "RIGHT", 6, 0)
+            d.retryDurationDD:SetSelected(tonumber(mg.retryDuration) or 3)
+            d.retryDurationDD:Show()
+        else
+            d.retryDurationLabel:Hide()
+            d.retryDurationDD:Hide()
+        end
         y = y - 26
 
         y = y - SEC_GAP

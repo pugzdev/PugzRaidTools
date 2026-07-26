@@ -1,12 +1,13 @@
-## Interface: 11508
+## Interface: 11509
 ## Title: |cFF33FF99Pugz|rRaidTools
 ## Notes: Raid group management and auto-swap tool for WoW Classic Era
 ## Author: Pugz
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariables: PugzRaidToolsDB
 
 Core.lua
 Reorder.lua
+PositionSort.lua
 AutoSwap.lua
 AutoMark.lua
 TargetMarks.lua

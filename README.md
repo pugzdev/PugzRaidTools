@@ -69,6 +69,7 @@ Automatically apply raid icons to players when configured encounter events occur
 - Use Smart Assign to resolve a raid position through a saved Raid Group composition.
 - Clear existing marks before applying a rule.
 - Configure repeatable rules and reusable mark sets.
+- Optionally retry temporarily unavailable players for a configurable duration.
 - Restrict presets to selected raid instances or enable them anywhere for testing.
 - Import and export complete presets or individual marking rules.
 
@@ -135,6 +136,7 @@ Manual feature toggles also produce a focused on-screen status notification.
 | `/prt automark off` | Disable Player Auto Marking. |
 | `/prt targetmarks on` | Enable Target Marks. |
 | `/prt targetmarks off` | Disable Target Marks. |
+| `/prt sortlog` | Open the latest exact-position sort log. |
 | `/prt reset` | Reset Group Auto Swap kill counters. |
 | `/prt markreset` | Reset Player Auto Marking counters. |
 | `/prt resetframe` | Restore the configuration window to its default size. |

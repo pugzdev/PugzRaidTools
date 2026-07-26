@@ -746,7 +746,7 @@ function PRT:BuildGroupsTab()
     W.AttachTooltip(forceCB.check, {
         anchor = "ANCHOR_TOP",
         lines = {
-            { "Forces exact group positions when enabled on group swaps. Shift click groups in the floating menu to also force exact group positions. May timeout from too many operations. Reapply force swap after /reload if needed.", 1, 1, 1, true },
+            { "Also applies exact within-group positions using the planned and batched position sorter. Shift + Left Click a composition in the floating list to run the same sort.", 1, 1, 1, true },
         },
     })
 
@@ -904,10 +904,10 @@ function PRT:BuildGroupsTab()
         local rosterPretty = {}
         for i = 1, 40 do
             local raw = PRT.Trim(self.slots[i]:GetText())
-            local k   = PRT.CanonName(raw)
+            local k   = PRT:GetPlayerIdentityKey(raw)
             if k ~= "" then
                 rosterSet[k]    = true
-                rosterPretty[k] = PRT.StripRealm(raw)
+                rosterPretty[k] = raw
             end
         end
 
@@ -916,7 +916,7 @@ function PRT:BuildGroupsTab()
         for i = 1, 40 do
             local eb  = self.slots[i]
             local raw = PRT.Trim(eb:GetText())
-            local k   = PRT.CanonName(raw)
+            local k   = PRT:GetPlayerIdentityKey(raw)
             if k == "" then
                 eb:SetTextColor(PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3])
             elseif raid[k] then
@@ -961,7 +961,7 @@ function PRT:BuildGroupsTab()
             if not rosterSet[k] then
                 extra[#extra + 1] = {
                     name      = info.name,
-                    display   = PRT.StripRealm(info.name),
+                    display   = info.displayName or info.name,
                     group     = info.subgroup or 0,
                     classFile = info.classFile,
                 }

@@ -12,8 +12,7 @@ local RR_LOCKED   = PRT.RR_LOCKED
 local RR_START    = PRT.RR_START
 
 function PRT:InitReorder()
-    self.pendingComp     = nil
-    self.pendingForcePos = false
+    self.pendingComp = nil
 end
 
 ---------------------------------------------------------------------------
@@ -37,20 +36,24 @@ function PRT:TryReorder()
         return
     end
 
-    local target   = self:BuildTarget(comp.roster)
-    local forcePos = self.pendingForcePos
-    local runName  = self.pendingComp
-    self.pendingComp     = nil
-    self.pendingForcePos = false
+    local target = self:BuildTarget(comp.roster)
+    local runName = self.pendingComp
+    self.pendingComp = nil
 
-    PRT.Print("Applying groups: " .. runName .. (forcePos and " (with positions)" or ""))
+    PRT.Print("Applying groups: " .. runName)
+
+    local autoMarkApplications
+    if PRT.BeginGroupSwapAutoMark then
+        autoMarkApplications = PRT:BeginGroupSwapAutoMark(runName)
+    end
 
     C_Timer.After(0.2, function()
         PRT:DoReorder(target)
         PRT:ShowNotification(runName .. " applied.")
-        if PRT.OnGroupSwapForAutoMark then PRT:OnGroupSwapForAutoMark(runName) end
-        if forcePos then
-            PRT:WaitThenForcePositions(target)
+        if PRT.FinishGroupSwapAutoMark then
+            PRT:FinishGroupSwapAutoMark(autoMarkApplications)
+        elseif PRT.OnGroupSwapForAutoMark then
+            PRT:OnGroupSwapForAutoMark(runName)
         end
     end)
 end
@@ -60,8 +63,18 @@ function PRT:RequestReorder(compName, forcePos)
         PRT.Print("No such composition: " .. tostring(compName))
         return
     end
-    self.pendingComp     = compName
-    self.pendingForcePos = forcePos or false
+    if forcePos then
+        if self.RequestPositionReorder then
+            self:RequestPositionReorder(compName)
+        else
+            PRT.Print("The exact position sorter is not available.")
+        end
+        return
+    end
+    if self.CancelPositionSort then
+        self:CancelPositionSort("a fast group sort started")
+    end
+    self.pendingComp = compName
     self:TryReorder()
 end
 
@@ -102,7 +115,7 @@ function PRT:DoReorder(pTarget)
                 counts[grp] = counts[grp] + 1
                 local slot = counts[grp]
                 if slot <= 5 then
-                    pRaid[grp][slot][RR_NAME]   = PRT.CanonName(name)
+                    pRaid[grp][slot][RR_NAME]   = PRT:GetRaidMemberIdentityKey(idx, name)
                     pRaid[grp][slot][RR_START]  = grp
                     pRaid[grp][slot][RR_LOCKED] = 0
                     pRaid[grp][slot][RR_INDEX]  = idx
@@ -263,196 +276,4 @@ function PRT:DoReorder(pTarget)
     end
 
     ExecuteActions()
-end
-
----------------------------------------------------------------------------
--- Force Positions - within-group slot sorting
--- Runs AFTER the group sort has settled.  Processes ONE position fix at
--- a time via a 3-swap bridge cycle (matching MRT's proven approach),
--- then waits for GROUP_ROSTER_UPDATE to re-read state before the next.
--- Works for any raid size (10-40) as long as >=2 groups have members.
----------------------------------------------------------------------------
-
---- Wait for GROUP_ROSTER_UPDATE events to stop (group sort settled),
---- then begin sequential position fixing.
-function PRT:WaitThenForcePositions(target)
-    if not self._posFrame then
-        self._posFrame = CreateFrame("Frame")
-    end
-    local f = self._posFrame
-
-    -- Sequence guard so stale callbacks are ignored
-    self._posSeq = (self._posSeq or 0) + 1
-    local seq = self._posSeq
-    local lastEvent = GetTime()
-
-    self._posFixCount = 0       -- reset for new sort session
-
-    f:RegisterEvent("GROUP_ROSTER_UPDATE")
-    f:SetScript("OnEvent", function()
-        lastEvent = GetTime()
-    end)
-
-    local function TryRun()
-        if self._posSeq ~= seq then return end          -- stale
-        if (GetTime() - lastEvent) >= 0.5 then
-            f:UnregisterEvent("GROUP_ROSTER_UPDATE")
-            f:SetScript("OnEvent", nil)
-            self:DoForcePositions(target)
-        else
-            C_Timer.After(0.3, TryRun)
-        end
-    end
-
-    -- Give the group sort time to start generating events
-    C_Timer.After(0.8, TryRun)
-end
-
---- Find and fix ONE within-group position error, then schedule the next.
---- Re-reads the full raid state every call (indices shift after swaps).
---- Uses MRT's proven 3-swap bridge cycle: all 3 SwapRaidSubgroup calls
---- fire in the same frame using the ORIGINAL indices for that cycle,
---- then we wait for GROUP_ROSTER_UPDATE before the next fix.
-function PRT:DoForcePositions(pTarget)
-    -- Guard against runaway loops
-    self._posFixCount = (self._posFixCount or 0) + 1
-    if self._posFixCount > 40 then
-        PRT.Print("Position sort: max iterations reached.")
-        self._posFixCount = 0
-        return
-    end
-
-    local n = GetNumGroupMembers()
-    if n == 0 then self._posFixCount = 0; return end
-
-    -- Fresh state read every call (indices change after each cycle)
-    local nameToIdx    = {}
-    local groupMembers = {}     -- g -> { canon1, canon2, ... } in position order
-    for g = 1, 8 do groupMembers[g] = {} end
-
-    for idx = 1, n do
-        local name, _, grp = GetRaidRosterInfo(idx)
-        if name and grp and grp >= 1 and grp <= 8 then
-            local canon = PRT.CanonName(name)
-            nameToIdx[canon] = idx
-            groupMembers[grp][#groupMembers[grp] + 1] = canon
-        end
-    end
-
-    -- Scan all groups for the first position that needs fixing
-    local fix   -- { group, rightName, wrongName }
-    for g = 1, 8 do
-        local members = groupMembers[g]
-        if #members >= 2 then
-            local tSlots    = pTarget[g]
-            local memberSet = {}
-            for _, c in ipairs(members) do memberSet[c] = true end
-
-            -- Desired order of PRESENT members (absent players skipped)
-            local desired = {}
-            for s = 1, 5 do
-                local tName = tSlots[s] and tSlots[s][RR_NAME] or ""
-                if tName ~= "" and memberSet[tName] then
-                    desired[#desired + 1] = tName
-                end
-            end
-
-            for pos = 1, math.min(#desired, #members) do
-                if members[pos] ~= desired[pos] then
-                    -- Locate the player who SHOULD be here
-                    local foundAt
-                    for j = pos + 1, #members do
-                        if members[j] == desired[pos] then
-                            foundAt = j
-                            break
-                        end
-                    end
-                    if foundAt then
-                        local rIdx = nameToIdx[desired[pos]]
-                        local wIdx = nameToIdx[members[pos]]
-                        -- Skip raid leader (index 1) – WoW won't move them
-                        if rIdx ~= 1 and wIdx ~= 1 then
-                            fix = {
-                                group     = g,
-                                rightName = desired[pos],
-                                wrongName = members[pos],
-                            }
-                            break
-                        end
-                    end
-                end
-            end
-        end
-        if fix then break end
-    end
-
-    if not fix then
-        local count = self._posFixCount - 1
-        if count > 0 then
-            PRT.Print(("Position sort complete (%d fix%s)."):format(
-                count, count == 1 and "" or "es"))
-        else
-            PRT.Print("Positions already correct.")
-        end
-        self._posFixCount = 0
-        return
-    end
-
-    -- Find bridge: any non-RL player in a different group
-    local bridgeName
-    for g = 1, 8 do
-        if g ~= fix.group then
-            for _, canon in ipairs(groupMembers[g]) do
-                if nameToIdx[canon] ~= 1 then
-                    bridgeName = canon
-                    break
-                end
-            end
-            if bridgeName then break end
-        end
-    end
-
-    if not bridgeName then
-        PRT.Print("Cannot sort positions: need non-RL players in at least two groups.")
-        self._posFixCount = 0
-        return
-    end
-
-    -- 3-swap bridge cycle (all use ORIGINAL indices – no updates between)
-    -- Matches MRT's proven sequence:
-    --   1. right ↔ bridge   (right leaves the group)
-    --   2. bridge ↔ wrong   (bridge takes wrong's slot; wrong leaves)
-    --   3. right ↔ bridge   (right returns to wrong's old slot; bridge home)
-    local rightIdx  = nameToIdx[fix.rightName]
-    local wrongIdx  = nameToIdx[fix.wrongName]
-    local bridgeIdx = nameToIdx[bridgeName]
-
-    SwapRaidSubgroup(rightIdx, bridgeIdx)       -- right ↔ bridge
-    SwapRaidSubgroup(bridgeIdx, wrongIdx)       -- bridge(orig) ↔ wrong
-    SwapRaidSubgroup(rightIdx, bridgeIdx)       -- right(orig) ↔ bridge(orig)
-
-    -- Wait for GROUP_ROSTER_UPDATE, then re-read state and fix next position
-    local f = self._posFrame
-    self._posSeq = (self._posSeq or 0) + 1
-    local seq = self._posSeq
-
-    f:RegisterEvent("GROUP_ROSTER_UPDATE")
-    f:SetScript("OnEvent", function()
-        if self._posSeq ~= seq then return end
-        f:UnregisterEvent("GROUP_ROSTER_UPDATE")
-        f:SetScript("OnEvent", nil)
-        C_Timer.After(0.1, function()
-            if self._posSeq ~= seq then return end
-            self:DoForcePositions(pTarget)
-        end)
-    end)
-
-    -- Safety timeout if no event arrives
-    C_Timer.After(3.0, function()
-        if self._posSeq ~= seq then return end
-        f:UnregisterEvent("GROUP_ROSTER_UPDATE")
-        f:SetScript("OnEvent", nil)
-        PRT.Print("Position sort timed out.")
-        self._posFixCount = 0
-    end)
 end
