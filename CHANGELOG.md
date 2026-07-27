@@ -1,11 +1,45 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 - 2026-07-27
 
 ### Added
 
+- Added the **Invite & Loot Tools** tab for raid invitations, assistant promotion, raid management, loot setup, and loot announcements.
+- Added multiple exact-match, case-insensitive auto-invite keywords.
+- Added optional guild-only keyword invites.
+- Added automatic acceptance of group invites from character friends, Battle.net friends, and guild members.
+- Added realm-aware auto-invite blocking with `/prt ban PlayerName[-Realm]`, `/prt unban PlayerName[-Realm]`, `/prt banlist`, and a blocked-player management window.
+- Added queued Raid Invites that reserve the initial party slots, automatically convert to a raid when another auto-invite is requested, and retry held or pending players after conversion.
+- Added `/prt invites on` and `/prt invites off` controls for the queued Raid Invites feature.
+- Added automatic assistant promotion by explicit player name or guild-rank threshold while respecting manual demotions for the current session.
+- Added `/prt disband`, which saves a realm-aware snapshot of the current group before disbanding it.
+- Added `/prt reinv`, which later invites players from the saved disband snapshot.
+- Added one-shot loot setup prompts when entering selected zones as group leader or receiving group leadership there.
+- Added loot prompt support for Naxxramas, Ahn'Qiraj, Blackwing Lair, Molten Core, Zul'Gurub, Ruins of Ahn'Qiraj, Blasted Lands, and Azshara.
+- Added an option to restrict loot setup prompts to raid groups.
+- Added configurable loot methods and quality-coloured thresholds, including Common (White).
+- Added optional automatic assignment of a configured master looter.
+- Added safe master-looter preservation when automatic assignment is disabled, preventing a blank setting from silently assigning the group leader.
+- Added a reusable settings-comparison prompt showing configured and current loot method, threshold, and master looter when applicable.
+- Added **Apply Configured** and **Keep Current Settings** actions to the loot prompt.
+- Added automatic Epic-or-higher raid-loot announcements with duplicate-source protection and optional item levels.
+- Added `/prt loot` to manually link every item in the current loot window to the appropriate group chat.
 - Added an explicit All Rights Reserved license.
 - Added tag-driven automatic packaging metadata for CurseForge releases.
+
+### Changed
+
+- Renamed the tab from **Invite Tools** to **Invite & Loot Tools**.
+- Reorganized the tab into clearly separated invite, raid-management, promotion, loot-distribution, and Loot to Chat sections.
+- Loot settings are prompted once rather than continuously enforced, so later manual changes remain untouched.
+- Loot prompts are centered and dynamically size themselves to the settings being displayed.
+- Slash-command parsing now tolerates capitalization and repeated internal whitespace.
+
+### Fixed
+
+- Reduced party-to-raid conversion delays by processing waiting invite requests as soon as conversion becomes possible.
+- Prevented queued or pending auto-invite requests from being lost when the initial party reaches its player limit.
+- Fixed `/prt invites off` falling through to the unknown-command response when its whitespace was not normalized.
 
 ## 1.1.0 - 2026-07-26
 

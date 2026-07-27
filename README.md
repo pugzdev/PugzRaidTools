@@ -96,6 +96,23 @@ Apply raid icons to NPCs by holding a configured modifier and moving the mouse o
 *   Store all groupings inside shareable presets.
 *   Import and export complete presets or individual groupings.
 
+## Invite & Loot Tools
+
+Invite & Loot Tools provides configurable raid-invite and loot-management helpers.
+
+*   Add multiple exact-match, case-insensitive whisper keywords for automatic group invites.
+*   Optionally restrict keyword-triggered invites to guild members.
+*   Automatically accept incoming group invites from character friends, Battle.net friends, and guild members.
+*   Block individual characters with realm-sensitive identities and review or remove them from the blocked-player window.
+*   Queue large invite waves safely while the group is still a party, convert at five members, and replay held requests after raid conversion.
+*   Automatically promote explicitly listed players or guild members at and above a selected guild rank.
+*   Prompt to compare configured and current loot settings when entering selected raids or world-boss zones as group leader.
+*   Optionally assign a configured master looter; when disabled, an existing master looter is preserved.
+*   Limit loot setup prompts to raid groups. Prompts are one-shot and do not overwrite later manual loot changes.
+*   Automatically link Epic-or-higher raid loot to group chat once per loot source, optionally including item level.
+*   Use `/prt loot` to link all items from the current loot window manually.
+*   Save the current roster while disbanding, then reinvite that snapshot later.
+
 ## Overall PRT Profiles
 
 PRT Profiles combine the three automation features into one shareable setup.
@@ -146,6 +163,13 @@ Manual feature toggles also produce a focused on-screen status notification.
 | <code>/prt automark off</code> |Disable Player Auto Marking.                          |
 | <code>/prt targetmarks on</code> |Enable Target Marks.                                  |
 | <code>/prt targetmarks off</code> |Disable Target Marks.                                 |
+| <code>/prt ban CharacterName[-Realm]</code> |Block a character from keyword-triggered invites.     |
+| <code>/prt unban CharacterName[-Realm]</code> |Remove a character from the invite block list.        |
+| <code>/prt banlist</code> |List characters blocked from keyword invites.         |
+| <code>/prt invites on</code> |Enable queued party-to-raid invites.                   |
+| <code>/prt invites off</code> |Disable queued party-to-raid invites.                  |
+| <code>/prt disband</code> |Save the current group roster and disband it.          |
+| <code>/prt reinv</code> |Invite characters from the last disband snapshot.      |
 | <code>/prt reset</code> |Reset Group Auto Swap kill counters.                  |
 | <code>/prt markreset</code> |Reset Player Auto Marking counters.                   |
 | <code>/prt resetframe</code> |Restore the configuration window to its default size. |

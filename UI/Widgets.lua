@@ -568,6 +568,172 @@ function W.CreatePopupFrame(name, width, height, opts)
     return f
 end
 
+-- Reusable centered prompt for comparing configured and current settings.
+-- Call popup:SetComparison({ contextText, configuredRows, currentRows,
+-- questionText }) each time before showing it. Rows are preformatted strings,
+-- so callers may include WoW color codes where appropriate.
+function W.CreateSettingsComparisonPopup(name, opts)
+    opts = opts or {}
+
+    local applyWidth = opts.applyWidth or 120
+    local keepWidth = opts.keepWidth or 140
+    local buttonGap = opts.buttonGap or 8
+    local popup = W.CreatePopupFrame(name, opts.minWidth or 330, opts.minHeight or 190, {
+        parent = opts.parent,
+        title = opts.title or "Apply Configured Settings?",
+        titleBarHeight = opts.titleBarHeight or 30,
+        titleX = opts.titleX or 12,
+        strata = opts.strata,
+        frontStrata = opts.frontStrata,
+        addToSpecialFrames = opts.addToSpecialFrames,
+    })
+    if opts.centerTitle ~= false then
+        popup.titleLabel:ClearAllPoints()
+        popup.titleLabel:SetPoint("TOP", popup, "TOP", 0, -(opts.titleTop or 7))
+        popup.titleLabel:SetJustifyH("CENTER")
+    end
+
+    popup.contextLabel = W.CreateLabel(popup, "", opts.fontSize or PRT.FONT_SIZE, 1, 1, 1)
+    popup.contextLabel:SetJustifyH("CENTER")
+
+    local configuredColor = opts.configuredColor or PRT.C.TITLE
+    popup.configuredHeader = W.CreateLabel(popup,
+        opts.configuredTitle or "Configured settings",
+        opts.fontSize or PRT.FONT_SIZE,
+        configuredColor[1], configuredColor[2], configuredColor[3])
+    popup.configuredHeader:SetJustifyH("CENTER")
+
+    local currentColor = opts.currentColor or { 1, 0.82, 0 }
+    popup.currentHeader = W.CreateLabel(popup,
+        opts.currentTitle or "Current settings",
+        opts.fontSize or PRT.FONT_SIZE,
+        currentColor[1], currentColor[2], currentColor[3])
+    popup.currentHeader:SetJustifyH("CENTER")
+
+    popup.questionLabel = W.CreateLabel(popup, "",
+        opts.fontSize or PRT.FONT_SIZE, 1, 1, 1)
+    popup.questionLabel:SetJustifyH("CENTER")
+
+    popup.applyButton = W.CreateButton(popup,
+        opts.applyText or "Apply Configured", applyWidth, opts.buttonHeight or 24)
+    popup.keepButton = W.CreateButton(popup,
+        opts.keepText or "Keep Current Settings", keepWidth, opts.buttonHeight or 24)
+
+    local buttonGroupWidth = applyWidth + buttonGap + keepWidth
+    local applyOffset = -(buttonGroupWidth / 2) + (applyWidth / 2)
+    popup.applyButton:SetPoint("BOTTOM", popup, "BOTTOM", applyOffset, opts.buttonBottom or 10)
+    popup.keepButton:SetPoint("LEFT", popup.applyButton, "RIGHT", buttonGap, 0)
+
+    popup.applyButton:SetScript("OnClick", function()
+        local result = true
+        if opts.onApply then result = opts.onApply(popup) end
+        if result ~= false then popup:Hide() end
+    end)
+    popup.keepButton:SetScript("OnClick", function()
+        if opts.onKeep then opts.onKeep(popup) end
+        popup:Hide()
+    end)
+
+    popup.configuredRows = {}
+    popup.currentRows = {}
+
+    local function EnsureRows(rows, count)
+        for index = #rows + 1, count do
+            local label = W.CreateLabel(popup, "",
+                opts.fontSize or PRT.FONT_SIZE, 0.85, 0.85, 0.85)
+            label:SetJustifyH("CENTER")
+            rows[index] = label
+        end
+        for index, label in ipairs(rows) do
+            if index <= count then label:Show() else label:Hide() end
+        end
+    end
+
+    local function PositionCentered(label, y)
+        label:ClearAllPoints()
+        label:SetPoint("TOP", popup, "TOP", 0, y)
+    end
+
+    local function LabelWidth(label)
+        if label.GetStringWidth then
+            local width = label:GetStringWidth()
+            if width and width > 0 then return width end
+        end
+        local text = label.GetText and label:GetText() or ""
+        text = tostring(text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+        return #text * ((opts.fontSize or PRT.FONT_SIZE) * 0.55)
+    end
+
+    function popup:SetComparison(data)
+        data = data or {}
+        local configuredRows = data.configuredRows or {}
+        local currentRows = data.currentRows or {}
+        EnsureRows(self.configuredRows, #configuredRows)
+        EnsureRows(self.currentRows, #currentRows)
+
+        self.contextLabel:SetText(data.contextText or "")
+        self.questionLabel:SetText(data.questionText or "Which settings would you like to use?")
+        self.configuredHeader:SetText(data.configuredTitle
+            or opts.configuredTitle or "Configured settings")
+        self.currentHeader:SetText(data.currentTitle or opts.currentTitle or "Current settings")
+
+        for index, text in ipairs(configuredRows) do
+            self.configuredRows[index]:SetText(text)
+        end
+        for index, text in ipairs(currentRows) do
+            self.currentRows[index]:SetText(text)
+        end
+
+        local y = -(opts.contentTop or 42)
+        PositionCentered(self.contextLabel, y)
+        y = y - (opts.contextGap or 22)
+
+        PositionCentered(self.configuredHeader, y)
+        y = y - (opts.headerGap or 16)
+        for index = 1, #configuredRows do
+            PositionCentered(self.configuredRows[index], y)
+            y = y - (opts.rowHeight or 16)
+        end
+        y = y - (opts.sectionGap or 8)
+
+        PositionCentered(self.currentHeader, y)
+        y = y - (opts.headerGap or 16)
+        for index = 1, #currentRows do
+            PositionCentered(self.currentRows[index], y)
+            y = y - (opts.rowHeight or 16)
+        end
+        y = y - (opts.questionGap or 10)
+
+        PositionCentered(self.questionLabel, y)
+        y = y - (opts.questionHeight or 20)
+
+        local labels = {
+            self.titleLabel,
+            self.contextLabel,
+            self.configuredHeader,
+            self.currentHeader,
+            self.questionLabel,
+        }
+        for index = 1, #configuredRows do labels[#labels + 1] = self.configuredRows[index] end
+        for index = 1, #currentRows do labels[#labels + 1] = self.currentRows[index] end
+
+        local widest = buttonGroupWidth + 32
+        for _, label in ipairs(labels) do
+            local extra = label == self.titleLabel and 58 or 34
+            widest = math.max(widest, LabelWidth(label) + extra)
+        end
+
+        local width = math.ceil(math.min(opts.maxWidth or 430,
+            math.max(opts.minWidth or 330, widest)))
+        local height = math.ceil(math.max(opts.minHeight or 190,
+            -y + (opts.footerHeight or 38)))
+        self:SetSize(width, height)
+        return width, height
+    end
+
+    return popup
+end
+
 function W.CreateNamePopup(name, opts)
     opts = opts or {}
 

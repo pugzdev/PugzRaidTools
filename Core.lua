@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.1.0"
+PRT.VERSION = "1.2.0"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -406,6 +406,49 @@ PRT.DEFAULTS = {
     autoLog = {
         enabled = false,
     },
+    inviteTools = {
+        autoInvite = {
+            enabled = false,
+            keywords = { "inv" },
+            bannedPlayers = {},  -- realm-aware identity key -> { name, realm }
+            guildOnly = false,
+            autoAcceptTrusted = false,
+            raidInvites = {
+                enabled = false,
+            },
+        },
+        autoPromote = {
+            enabled = false,
+            names = "",
+            guildRankThreshold = 0, -- 0 = explicit names only; otherwise top N guild ranks
+        },
+        loot = {
+            enabled = false,
+            method = "group",
+            assignMasterLooter = false,
+            masterLooter = "",
+            threshold = 1,
+            onlyInRaid = true,
+            zones = {
+                naxxramas = false,
+                aq40 = false,
+                bwl = false,
+                moltenCore = false,
+                zulgurub = false,
+                aq20 = false,
+                blastedLands = false,
+                azshara = false,
+            },
+        },
+        lootToChat = {
+            enabled = false,
+            includeItemLevel = false,
+        },
+        reinviteSnapshot = {
+            createdAt = 0,
+            members = {},
+        },
+    },
 }
 
 ---------------------------------------------------------------------------
@@ -424,7 +467,8 @@ local function DeepMerge(defaults, saved)
             end
         elseif type(v) == "table" and type(saved[k]) == "table"
                and k ~= "compositions" and k ~= "triggers"
-               and k ~= "presets" and k ~= "swapPresets" then
+               and k ~= "presets" and k ~= "swapPresets"
+               and k ~= "keywords" then
             DeepMerge(v, saved[k])
         end
     end
@@ -1310,6 +1354,7 @@ initFrame:SetScript("OnEvent", function(self, event, addon)
     if PRT.InitPRTProfiles then PRT:InitPRTProfiles() end
     if PRT.InitRaidFeatureStatusWarning then PRT:InitRaidFeatureStatusWarning() end
     if PRT.InitAutoLog then PRT:InitAutoLog() end
+    if PRT.InitInviteTools then PRT:InitInviteTools() end
     if PRT.InitFloatingList then PRT:InitFloatingList() end
     if PRT.CreateMinimapButton then PRT:CreateMinimapButton() end
 end)
@@ -1320,7 +1365,9 @@ end)
 SLASH_PRT1 = "/prt"
 local function PRT_ExtractSlashArgument(rawMsg, command)
     rawMsg = PRT.Trim(rawMsg or "")
-    local arg = rawMsg:match("^" .. command .. "%s+(.+)$") or ""
+    local typedCommand, arg = rawMsg:match("^(%S+)%s+(.+)$")
+    if not typedCommand or string.lower(typedCommand) ~= command then arg = "" end
+    arg = arg or ""
     arg = PRT.Trim(arg)
     arg = arg:gsub('^"(.*)"$', "%1")
     arg = arg:gsub("^'(.*)'$", "%1")
@@ -1337,10 +1384,46 @@ end
 
 SlashCmdList["PRT"] = function(msg)
     local rawMsg = PRT.Trim(msg or "")
-    local msg = string.lower(rawMsg)
+    local msg = string.lower(rawMsg):gsub("%s+", " ")
 
     if msg == "" or msg == "config" or msg == "options" then
         if PRT.ToggleMainFrame then PRT:ToggleMainFrame() end
+    elseif msg == "invites on" then
+        if PRT.SetRaidInvitesEnabled then PRT:SetRaidInvitesEnabled(true, true) end
+    elseif msg == "invites off" then
+        if PRT.SetRaidInvitesEnabled then PRT:SetRaidInvitesEnabled(false, true) end
+    elseif msg == "invites" then
+        if PRT.GetRaidInvitesEnabled and PRT:GetRaidInvitesEnabled() then
+            PRT.Print("Raid Invites is enabled.")
+        else
+            PRT.Print("Raid Invites is disabled.")
+        end
+    elseif msg == "loot" then
+        if PRT.LinkLootToChat then PRT:LinkLootToChat(true) end
+    elseif msg == "ban" then
+        PRT.Print("Usage: /prt ban PlayerName or PlayerName-Realm")
+    elseif msg == "unban" then
+        PRT.Print("Usage: /prt unban PlayerName or PlayerName-Realm")
+    elseif msg:match("^ban%s+") then
+        local playerName = PRT_ExtractSlashArgument(rawMsg, "ban")
+        if playerName == "" then
+            PRT.Print("Usage: /prt ban PlayerName or PlayerName-Realm")
+        elseif PRT.AddInviteBan then
+            PRT:AddInviteBan(playerName)
+        end
+    elseif msg:match("^unban%s+") then
+        local playerName = PRT_ExtractSlashArgument(rawMsg, "unban")
+        if playerName == "" then
+            PRT.Print("Usage: /prt unban PlayerName or PlayerName-Realm")
+        elseif PRT.RemoveInviteBan then
+            PRT:RemoveInviteBan(playerName)
+        end
+    elseif msg == "banlist" then
+        if PRT.PrintInviteBanList then PRT:PrintInviteBanList() end
+    elseif msg == "disband" or msg == "dis" then
+        if PRT.DisbandWithSnapshot then PRT:DisbandWithSnapshot() end
+    elseif msg == "reinv" or msg == "reinvite" then
+        if PRT.ReinviteSnapshot then PRT:ReinviteSnapshot() end
     elseif msg:match("^who%s+") then
         local query = PRT_ExtractSlashArgument(rawMsg, "who")
         if query == "" then
@@ -1472,6 +1555,14 @@ SlashCmdList["PRT"] = function(msg)
         PRT.Print("  /prt targetmarks on - Enable Target Marks")
         PRT.Print("  /prt targetmarks off - Disable Target Marks")
         PRT.Print("  /prt markreset - Reset auto-mark kill counters")
+        PRT.Print("  /prt ban PlayerName[-Realm] - Block a player from keyword invites")
+        PRT.Print("  /prt unban PlayerName[-Realm] - Remove an invite block")
+        PRT.Print("  /prt banlist - List players blocked from keyword invites")
+        PRT.Print("  /prt invites on - Enable queued party-to-raid invites")
+        PRT.Print("  /prt invites off - Disable queued party-to-raid invites")
+        PRT.Print("  /prt loot - Link items from the current loot window to chat")
+        PRT.Print("  /prt disband - Save the raid roster and disband")
+        PRT.Print("  /prt reinv - Invite players from the last disband snapshot")
         PRT.Print("  /prt sortlog - Open the position sort event log")
         PRT.Print("  /prt sortlog clear - Clear the position sort event log")
         PRT.Print("  /prt who charactername - Show the alias for a stored character")

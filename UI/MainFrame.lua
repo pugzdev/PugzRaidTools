@@ -50,6 +50,7 @@ local TABS = {
     { key = "autoswap", label = "Group Auto Swap" },
     { key = "automark", label = "Player Auto Marking" },
     { key = "targetmarks", label = "Target Marks" },
+    { key = "invitetools", label = "Invite & Loot Tools" },
     { key = "profiles", label = "Profiles" },
     { key = "settings", label = "Settings" },
 }
@@ -364,6 +365,7 @@ function PRT:ToggleMainFrame()
         if PRT.BuildAutoSwapTab then PRT:BuildAutoSwapTab() end
         if PRT.BuildAutoMarkTab then PRT:BuildAutoMarkTab() end
         if PRT.BuildTargetMarksTab then PRT:BuildTargetMarksTab() end
+        if PRT.BuildInviteToolsTab then PRT:BuildInviteToolsTab() end
         if PRT.BuildProfilesTab then PRT:BuildProfilesTab() end
         if PRT.BuildSettingsTab then PRT:BuildSettingsTab() end
         self:SelectTab("groups")

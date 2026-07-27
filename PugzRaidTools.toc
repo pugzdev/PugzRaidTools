@@ -2,10 +2,12 @@
 ## Title: |cFF33FF99Pugz|rRaidTools
 ## Notes: Raid group management and auto-swap tool for WoW Classic Era
 ## Author: Pugz
-## Version: 1.1.0
+## Version: 1.2.0
+## X-Curse-Project-ID: 1623048
 ## SavedVariables: PugzRaidToolsDB
 
 Core.lua
+InviteTools.lua
 Reorder.lua
 PositionSort.lua
 AutoSwap.lua
@@ -15,6 +17,7 @@ Profiles.lua
 RosterMatcher.lua
 UI\Widgets.lua
 UI\MainFrame.lua
+UI\InviteToolsTab.lua
 UI\GroupsTab.lua
 UI\RosterMatcherUI.lua
 UI\AutoSwapTab.lua
