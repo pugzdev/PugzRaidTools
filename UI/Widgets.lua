@@ -200,6 +200,9 @@ function W.CreateSelectableButton(parent, text, opts)
     btn:SetSize(opts.width or 120, opts.height or 24)
     btn:EnableMouse(true)
     btn:RegisterForClicks(opts.clicks or "AnyUp")
+    if opts.dragButton then
+        btn:RegisterForDrag(opts.dragButton)
+    end
 
     local bg = opts.bgColor or { 0, 0, 0, 0 }
     local hover = opts.hoverBgColor or { bg[1], bg[2], bg[3], math.min((bg[4] or 1) + 0.15, 1) }
@@ -228,38 +231,117 @@ function W.CreateSelectableButton(parent, text, opts)
     btn._normalText = normalText
     btn._selectedText = selectedText
     btn._selected = false
+    btn._mrtHoverAnimation = opts.hoverAnimation == "MRT"
+
+    local function ApplyBackground(self, color)
+        self._bgTex:SetColorTexture(color[1], color[2], color[3], color[4] or 1)
+    end
+
+    local function EnsureMRTHoverAnimation(self)
+        if self._mrtHoverAnim then return end
+
+        local texture = self:CreateTexture(nil, "ARTWORK")
+        texture:SetPoint("LEFT", 0, 0)
+        texture:SetPoint("RIGHT", 0, 0)
+        texture:SetHeight(opts.hoverAnimationHeight or self:GetHeight())
+        texture:SetColorTexture(0.5, 0.5, 0.5, 0.2)
+
+        local anim = self:CreateAnimationGroup()
+        anim:SetLooping("NONE")
+        local timer = anim:CreateAnimation()
+        timer:SetDuration(0.25)
+        timer.cR, timer.cG, timer.cB, timer.cA = 0.5, 0.5, 0.5, 0.2
+        timer:SetScript("OnUpdate", function(animation)
+            local progress = animation:GetProgress()
+            local r = animation.fR + (animation.tR - animation.fR) * progress
+            local g = animation.fG + (animation.tG - animation.fG) * progress
+            local b = animation.fB + (animation.tB - animation.fB) * progress
+            local a = animation.fA + (animation.tA - animation.fA) * progress
+            animation.cR, animation.cG, animation.cB, animation.cA = r, g, b, a
+            texture:SetColorTexture(r, g, b, a)
+        end)
+        anim:SetScript("OnFinished", function(group)
+            if timer.hideOnEnd then
+                texture:Hide()
+                texture:SetColorTexture(0.5, 0.5, 0.5, 0.2)
+                timer.cR, timer.cG, timer.cB, timer.cA = 0.5, 0.5, 0.5, 0.2
+            end
+        end)
+
+        self._mrtHoverTexture = texture
+        self._mrtHoverAnim = anim
+        self._mrtHoverTimer = timer
+    end
+
+    local function AnimateMRTHover(self, entering)
+        EnsureMRTHoverAnimation(self)
+        local anim = self._mrtHoverAnim
+        local timer = self._mrtHoverTimer
+        if anim:IsPlaying() then
+            anim:Stop()
+        end
+
+        timer.fR, timer.fG, timer.fB, timer.fA = timer.cR, timer.cG, timer.cB, timer.cA
+        if entering then
+            timer.tR, timer.tG, timer.tB, timer.tA = 1, 1, 1, 0.5
+            timer.hideOnEnd = false
+        else
+            timer.tR, timer.tG, timer.tB, timer.tA = 0.5, 0.5, 0.5, 0
+            timer.hideOnEnd = true
+        end
+
+        anim:Play()
+        self._mrtHoverTexture:Show()
+    end
+
+    function btn:ResetHoverAnimation()
+        if not self._mrtHoverAnim then return end
+        if self._mrtHoverAnim:IsPlaying() then
+            self._mrtHoverAnim:Stop()
+        end
+        self._mrtHoverTexture:Hide()
+        self._mrtHoverTexture:SetColorTexture(0.5, 0.5, 0.5, 0.2)
+        local timer = self._mrtHoverTimer
+        timer.cR, timer.cG, timer.cB, timer.cA = 0.5, 0.5, 0.5, 0.2
+        timer.hideOnEnd = false
+    end
+
+    function btn:SetHoverAnimationSuspended(suspended)
+        self._hoverAnimationSuspended = suspended and true or false
+        if self._hoverAnimationSuspended then
+            self:ResetHoverAnimation()
+        end
+    end
 
     function btn:SetSelected(isSelected)
         self._selected = isSelected and true or false
         if self._selected then
-            self._bgTex:SetColorTexture(
-                self._selectedBg[1], self._selectedBg[2], self._selectedBg[3], self._selectedBg[4] or 1)
+            ApplyBackground(self, self._selectedBg)
             W.AddBorders(self, self._selectedBorder[1], self._selectedBorder[2], self._selectedBorder[3], self._selectedBorder[4] or 1)
             self.label:SetTextColor(self._selectedText[1], self._selectedText[2], self._selectedText[3], self._selectedText[4] or 1)
         else
-            self._bgTex:SetColorTexture(
-                self._normalBg[1], self._normalBg[2], self._normalBg[3], self._normalBg[4] or 1)
+            ApplyBackground(self, self._normalBg)
             W.AddBorders(self, self._normalBorder[1], self._normalBorder[2], self._normalBorder[3], self._normalBorder[4] or 1)
             self.label:SetTextColor(self._normalText[1], self._normalText[2], self._normalText[3], self._normalText[4] or 1)
         end
     end
 
     btn:SetScript("OnEnter", function(self)
-        if self._selected then
-            self._bgTex:SetColorTexture(
-                self._selectedBg[1], self._selectedBg[2], self._selectedBg[3], self._selectedBg[4] or 1)
-        else
-            self._bgTex:SetColorTexture(
-                self._hoverBg[1], self._hoverBg[2], self._hoverBg[3], self._hoverBg[4] or 1)
+        if self._hoverAnimationSuspended then return end
+        if self._mrtHoverAnimation then
+            AnimateMRTHover(self, true)
+        elseif not self._selected then
+            ApplyBackground(self, self._hoverBg)
         end
     end)
     btn:SetScript("OnLeave", function(self)
-        if self._selected then
-            self._bgTex:SetColorTexture(
-                self._selectedBg[1], self._selectedBg[2], self._selectedBg[3], self._selectedBg[4] or 1)
+        if self._hoverAnimationSuspended then return end
+        if self._mrtHoverAnimation then
+            AnimateMRTHover(self, false)
+        elseif self._selected then
+            ApplyBackground(self, self._selectedBg)
         else
-            self._bgTex:SetColorTexture(
-                self._normalBg[1], self._normalBg[2], self._normalBg[3], self._normalBg[4] or 1)
+            ApplyBackground(self, self._normalBg)
         end
     end)
 
@@ -405,7 +487,10 @@ function W.AttachTooltip(frame, opts)
     local lines    = opts.lines    or {}   -- static lines array
     local getLines = opts.getLines         -- optional function() → lines array for dynamic content
 
+    local shouldShow = opts.shouldShow
+
     local function showTooltip(self)
+        if shouldShow and not shouldShow(self) then return end
         GameTooltip:SetOwner(self, anchor)
         GameTooltip:ClearLines()
         if title then

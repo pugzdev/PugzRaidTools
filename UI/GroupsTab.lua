@@ -52,7 +52,11 @@ local function SetSlotBorder(panel, slotIdx, r, g, b)
 end
 
 local function ClearSlotBorder(panel, slotIdx)
-    SetSlotBorder(panel, slotIdx, PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3])
+    if panel.duplicateSlots and panel.duplicateSlots[slotIdx] then
+        SetSlotBorder(panel, slotIdx, PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
+    else
+        SetSlotBorder(panel, slotIdx, PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3])
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -65,6 +69,8 @@ function PRT:BuildGroupsTab()
     panel.selectedComp = nil
     panel.slots    = {}   -- [1..40] EditBox
     panel.overlays = {}   -- [1..40] overlay Buttons for drag
+    panel.duplicateWarnings = {}
+    panel.duplicateSlots = {}
     panel.dirty    = false
 
     local ShowNewCompPopup
@@ -183,6 +189,7 @@ function PRT:BuildGroupsTab()
             -- EditBox (full slot width, no drag handle)
             local eb = W.CreateEditBox(panel, COL_W, SLOT_H)
             eb:SetPoint("TOPLEFT", xOff, slotY)
+            eb:SetTextInsets(6, 22, 0, 0)
             eb.slotIndex = idx
 
             eb:SetScript("OnEditFocusLost", function(self)
@@ -203,8 +210,21 @@ function PRT:BuildGroupsTab()
                     FinishDrag()
                 end
             end)
+            eb:HookScript("OnTextChanged", function(self, isUserInput)
+                if isUserInput then
+                    panel.dirty = true
+                    panel:RefreshDuplicateWarnings()
+                end
+            end)
 
             panel.slots[idx] = eb
+
+            local duplicateWarning = eb:CreateTexture(nil, "OVERLAY")
+            duplicateWarning:SetTexture("Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew")
+            duplicateWarning:SetSize(15, 15)
+            duplicateWarning:SetPoint("RIGHT", -3, 0)
+            duplicateWarning:Hide()
+            panel.duplicateWarnings[idx] = duplicateWarning
 
             -- Overlay Button (sits on top for drag + click-to-edit)
             local ov = W.CreateOverlayButton(panel, eb, { dragButton = "LeftButton" })
@@ -241,6 +261,35 @@ function PRT:BuildGroupsTab()
                     eb._bgTex:SetColorTexture(bg[1], bg[2], bg[3], bg[4])
                 end
             end)
+
+            local warningSlotIndex = idx
+            local duplicateTooltip = {
+                anchor = "ANCHOR_RIGHT",
+                title = "Duplicate Character Found",
+                titleColor = PRT.C.YELLOW,
+                shouldShow = function()
+                    return panel.duplicateSlots[warningSlotIndex] ~= nil
+                end,
+                getLines = function()
+                    local duplicate = panel.duplicateSlots[warningSlotIndex]
+                    if not duplicate then return {} end
+
+                    local lines = {
+                        { duplicate.displayName .. " appears in multiple raid positions:", 1, 1, 1, true },
+                    }
+                    for _, duplicateSlot in ipairs(duplicate.slots) do
+                        local duplicateGroup = math.floor((duplicateSlot - 1) / 5) + 1
+                        local groupSlot = ((duplicateSlot - 1) % 5) + 1
+                        lines[#lines + 1] = {
+                            ("Group %d, Slot %d"):format(duplicateGroup, groupSlot),
+                            PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3],
+                        }
+                    end
+                    return lines
+                end,
+            }
+            W.AttachTooltip(eb, duplicateTooltip)
+            W.AttachTooltip(ov, duplicateTooltip)
 
             panel.overlays[idx] = ov
         end
@@ -348,12 +397,7 @@ function PRT:BuildGroupsTab()
             if qlDrag.hoverIndex then
                 local old = panel.quickButtons[qlDrag.hoverIndex]
                 if old and old:IsShown() then
-                    if old.compName == panel.selectedComp then
-                        old._bgTex:SetColorTexture(PRT.C.SIDEBAR_SEL[1], PRT.C.SIDEBAR_SEL[2],
-                            PRT.C.SIDEBAR_SEL[3], PRT.C.SIDEBAR_SEL[4])
-                    else
-                        old._bgTex:SetColorTexture(0, 0, 0, 0)
-                    end
+                    old:SetSelected(old.compName == panel.selectedComp)
                 end
             end
             if hovered then
@@ -375,18 +419,17 @@ function PRT:BuildGroupsTab()
         if qlDrag.hoverIndex then
             local old = panel.quickButtons[qlDrag.hoverIndex]
             if old and old:IsShown() then
-                if old.compName == panel.selectedComp then
-                    old._bgTex:SetColorTexture(PRT.C.SIDEBAR_SEL[1], PRT.C.SIDEBAR_SEL[2],
-                        PRT.C.SIDEBAR_SEL[3], PRT.C.SIDEBAR_SEL[4])
-                else
-                    old._bgTex:SetColorTexture(0, 0, 0, 0)
-                end
+                old:SetSelected(old.compName == panel.selectedComp)
             end
         end
         qlDrag.active = false
         qlDrag.sourceIndex = nil
         qlDrag.hoverIndex = nil
         qlGhost:Hide()
+        for _, btn in ipairs(panel.quickButtons) do
+            btn:SetHoverAnimationSuspended(false)
+            btn:SetSelected(btn.compName == panel.selectedComp)
+        end
     end
 
     ---------------------------------------------------------------------------
@@ -496,7 +539,7 @@ function PRT:BuildGroupsTab()
         { key = "2col",   label = "G1  G2\nG3  G4\nG5  G6\nG7  G8" },
         { key = "8col",   label = "G1 G2 G3 G4 ..." },
         { key = "1col",   label = "G1\nG2\nG3\nG4\n..." },
-        { key = "cooked", label = "PRT\nImport" },
+        { key = "cooked", label = "PRT\nImport", exportLabel = "PRT\nFormat" },
     }
 
     local sipShapeBtns = {}
@@ -592,23 +635,63 @@ function PRT:BuildGroupsTab()
     -- Export Popup (single composition)
     ---------------------------------------------------------------------------
     local exportPopup = W.CreateTextTransferPopup("PRT_ExportPopup", {
-        width = 450,
-        height = 280,
+        width = 520,
+        height = 370,
         title = "Export Raid Group",
-        instruction = "Select all (Ctrl+A) and copy (Ctrl+C):",
-        boxHeight = 200,
+        instruction = "Choose a layout above, then select all (Ctrl+A) and copy (Ctrl+C):",
+        instructionY = -122,
+        boxY = -140,
+        boxHeight = 190,
         actionText = "Close",
         actionWidth = 110,
     })
 
+    local exportShapeButtons = {}
+    local exportBtnsX = math.floor((520 - 4 * SB_BTN_W - 3 * SB_BTN_GAP) / 2)
+
+    local function SelectExportShape(shapeKey)
+        if not panel.selectedComp then return end
+
+        exportPopup._selectedShape = shapeKey
+        PRT:GetDB().settings.lastExportShape = shapeKey
+        for _, button in ipairs(exportShapeButtons) do
+            button:SetSelected(button.shapeKey == shapeKey)
+        end
+
+        exportPopup.textBox:SetText(PRT:ExportCompRoster(panel.selectedComp, shapeKey))
+        exportPopup.textBox.editBox:SetFocus()
+        exportPopup.textBox.editBox:HighlightText()
+    end
+
+    for i, shape in ipairs(shapes) do
+        local btn = W.CreateSelectableButton(exportPopup, shape.exportLabel or shape.label, {
+            width = SB_BTN_W,
+            height = SB_BTN_H,
+            bgColor = { 0.08, 0.08, 0.08, 0.9 },
+            hoverBgColor = { 0.12, 0.12, 0.12, 0.9 },
+            selectedBgColor = { 0.12, 0.15, 0.12, 0.95 },
+            borderColor = PRT.C.BORDER,
+            selectedBorderColor = PRT.C.TITLE,
+            textColor = { 0.8, 0.8, 0.8, 1 },
+            selectedTextColor = { PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3], 1 },
+            fontSize = PRT.FONT_SIZE - 1,
+        })
+        btn:SetPoint("TOPLEFT", exportBtnsX + (i - 1) * (SB_BTN_W + SB_BTN_GAP), -32)
+        btn.shapeKey = shape.key
+        btn:SetScript("OnClick", function(self)
+            SelectExportShape(self.shapeKey)
+        end)
+        exportShapeButtons[i] = btn
+    end
+
     -- Wire the Export button on the quick panel
     qBtnExport:SetScript("OnClick", function()
         if not panel.selectedComp then PRT.Print("No composition selected."); return end
-        local text = PRT:ExportCompRoster(panel.selectedComp)
         exportPopup:Open({
-            text = text,
-            highlight = true,
+            text = "",
         })
+        local shape = PRT:GetDB().settings.lastExportShape or "8col"
+        SelectExportShape(shape)
     end)
 
     ---------------------------------------------------------------------------
@@ -778,34 +861,40 @@ function PRT:BuildGroupsTab()
         local order = PRT:GetCompOrder()
         local content = self.quickScroll.content
 
-        for _, btn in ipairs(self.quickButtons) do btn:Hide() end
+        for _, btn in ipairs(self.quickButtons) do
+            btn:ResetHoverAnimation()
+            btn:Hide()
+        end
 
         local btnH = 20
         for i, compName in ipairs(order) do
             local btn = self.quickButtons[i]
             if not btn then
-                btn = W.CreateRowButton(content, btnH, {
+                btn = W.CreateSelectableButton(content, "", {
+                    height = btnH,
                     bgColor = { 0, 0, 0, 0 },
+                    selectedBgColor = PRT.C.SIDEBAR_SEL,
+                    borderColor = { 0, 0, 0, 0 },
+                    selectedBorderColor = { 0, 0, 0, 0 },
+                    textColor = { 1, 1, 1, 1 },
+                    selectedTextColor = { PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3], 1 },
                     fontSize = PRT.FONT_SIZE,
+                    justifyH = "LEFT",
+                    labelPoint = { "LEFT", 6, 0 },
+                    hoverAnimation = "MRT",
+                    hoverAnimationHeight = btnH,
                     dragButton = "LeftButton",
                 })
-
-                btn:SetScript("OnEnter", function(self)
-                    if self.compName ~= panel.selectedComp then
-                        self._bgTex:SetColorTexture(0.15, 0.15, 0.15, 0.6)
-                    end
-                end)
-                btn:SetScript("OnLeave", function(self)
-                    if self.compName ~= panel.selectedComp then
-                        self._bgTex:SetColorTexture(0, 0, 0, 0)
-                    end
-                end)
+                btn.label:SetPoint("RIGHT", -4, 0)
                 btn:SetScript("OnClick", function(self)
                     panel:LoadComp(self.compName)
                 end)
 
                 btn:SetScript("OnDragStart", function(self)
                     if self.orderIndex then
+                        for _, quickButton in ipairs(panel.quickButtons) do
+                            quickButton:SetHoverAnimationSuspended(true)
+                        end
                         qlDrag.active = true
                         qlDrag.sourceIndex = self.orderIndex
                         qlDrag.hoverIndex = nil
@@ -824,15 +913,7 @@ function PRT:BuildGroupsTab()
             btn.orderIndex = i
             btn.label:SetText(compName)
 
-            if compName == self.selectedComp then
-                btn._bgTex:SetColorTexture(
-                    PRT.C.SIDEBAR_SEL[1], PRT.C.SIDEBAR_SEL[2],
-                    PRT.C.SIDEBAR_SEL[3], PRT.C.SIDEBAR_SEL[4])
-                btn.label:SetTextColor(PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3], 1)
-            else
-                btn._bgTex:SetColorTexture(0, 0, 0, 0)
-                btn.label:SetTextColor(1, 1, 1, 1)
-            end
+            btn:SetSelected(compName == self.selectedComp)
 
             btn:ClearAllPoints()
             btn:SetPoint("TOPLEFT",  content, "TOPLEFT",  0, -(i - 1) * btnH)
@@ -899,6 +980,25 @@ function PRT:BuildGroupsTab()
         if PRT.RefreshRosterMatcherPopup then PRT:RefreshRosterMatcherPopup() end
     end
 
+    function panel:RefreshDuplicateWarnings()
+        local editorRoster = {}
+        for i = 1, 40 do
+            editorRoster[i] = PRT.Trim(self.slots[i]:GetText())
+        end
+
+        self.duplicateSlots = PRT:FindDuplicateRosterSlots(editorRoster)
+        for i = 1, 40 do
+            local warning = self.duplicateWarnings[i]
+            if self.duplicateSlots[i] then
+                SetSlotBorder(self, i, PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
+                if warning then warning:Show() end
+            else
+                ClearSlotBorder(self, i)
+                if warning then warning:Hide() end
+            end
+        end
+    end
+
     function panel:RefreshHighlights()
         local rosterSet    = {}
         local rosterPretty = {}
@@ -911,6 +1011,7 @@ function PRT:BuildGroupsTab()
             end
         end
 
+        self:RefreshDuplicateWarnings()
         local raid = PRT.GetRaidRoster()
 
         for i = 1, 40 do
@@ -1060,6 +1161,7 @@ function PRT:BuildGroupsTab()
         for i = 1, 40 do
             if panel.slots[i] then panel.slots[i]:SetText("") end
         end
+        panel:RefreshHighlights()
         panel:RefreshQuickLoad()
         if PRT.RefreshRosterMatcherPopup then PRT:RefreshRosterMatcherPopup() end
     end

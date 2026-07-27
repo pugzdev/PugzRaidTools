@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.1 - 2026-07-27
+
+### Added
+
+- Added realm-aware duplicate-character warnings to the Raid Groups editor, including highlighted slot borders, alert icons, and tooltips listing every duplicate group and slot.
+- Added selectable `2-column`, `8-column`, `1-column`, and PRT layouts to individual Raid Group exports.
+
+### Changed
+
+- Added clearer tooltips to the Target Marks Preset Grouping import/export buttons, distinguishing single-group transfers from complete preset transfers.
+- Improved menu feedback with smooth hover highlight animations in the sidebar, Raid Groups Quick Load list, and Player Auto Marking rule list.
+
+### Fixed
+
+- Fixed the main configuration window background covering its outer border at higher opacity settings.
+- Fixed individual Raid Group exports using a row layout that did not correspond to the selected shaped importer.
+- Preserved empty raid slots during shaped export/import round trips with explicit `-` placeholders.
+- Replaced visible tab glyphs in multi-column Raid Group exports with ordinary spaces while retaining tab-compatible spreadsheet imports.
+
 ## 1.2.0 - 2026-07-27
 
 ### Added

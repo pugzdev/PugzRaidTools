@@ -1143,7 +1143,10 @@ function PRT:BuildAutoMarkTab()
     function panel:RefreshRules()
         local preset = GetActivePreset()
 
-        for _, btn in ipairs(self.ruleButtons) do btn:Hide() end
+        for _, btn in ipairs(self.ruleButtons) do
+            if btn.ResetHoverAnimation then btn:ResetHoverAnimation() end
+            btn:Hide()
+        end
 
         if not preset then
             self.selectedRule = nil
@@ -1155,24 +1158,22 @@ function PRT:BuildAutoMarkTab()
         for i, mg in ipairs(preset.markGroups) do
             local btn = self.ruleButtons[i]
             if not btn then
-                btn = CreateFrame("Button", nil, content)
-                btn:SetHeight(22)
-                btn:EnableMouse(true)
-                W.AddBackground(btn, 0, 0, 0, 0)
-                btn.label = W.CreateLabel(btn, "", PRT.FONT_SIZE, 1, 1, 1)
-                btn.label:SetPoint("LEFT", 6, 0)
+                btn = W.CreateSelectableButton(content, "", {
+                    width = RULE_LIST_W - 4,
+                    height = 22,
+                    bgColor = { 0, 0, 0, 0 },
+                    selectedBgColor = PRT.C.SIDEBAR_SEL,
+                    borderColor = { 0, 0, 0, 0 },
+                    selectedBorderColor = { 0, 0, 0, 0 },
+                    textColor = { 1, 1, 1, 1 },
+                    selectedTextColor = PRT.C.TITLE,
+                    fontSize = PRT.FONT_SIZE,
+                    justifyH = "LEFT",
+                    labelPoint = { "LEFT", 6, 0 },
+                    hoverAnimation = "MRT",
+                    hoverAnimationHeight = 22,
+                })
                 btn.label:SetPoint("RIGHT", -4, 0)
-                btn.label:SetJustifyH("LEFT")
-                btn:SetScript("OnEnter", function(self)
-                    if panel.selectedRule ~= self._ruleIdx then
-                        self._bgTex:SetColorTexture(0.15, 0.15, 0.15, 0.6)
-                    end
-                end)
-                btn:SetScript("OnLeave", function(self)
-                    if panel.selectedRule ~= self._ruleIdx then
-                        self._bgTex:SetColorTexture(0, 0, 0, 0)
-                    end
-                end)
                 btn:SetScript("OnClick", function(self)
                     panel.selectedRule = self._ruleIdx
                     panel:HighlightRuleButton()
@@ -1204,15 +1205,7 @@ function PRT:BuildAutoMarkTab()
     function panel:HighlightRuleButton()
         for i, btn in ipairs(self.ruleButtons) do
             if btn:IsShown() then
-                if i == self.selectedRule then
-                    btn._bgTex:SetColorTexture(
-                        PRT.C.SIDEBAR_SEL[1], PRT.C.SIDEBAR_SEL[2],
-                        PRT.C.SIDEBAR_SEL[3], PRT.C.SIDEBAR_SEL[4])
-                    btn.label:SetTextColor(PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3])
-                else
-                    btn._bgTex:SetColorTexture(0, 0, 0, 0)
-                    btn.label:SetTextColor(1, 1, 1)
-                end
+                btn:SetSelected(i == self.selectedRule)
             end
         end
     end

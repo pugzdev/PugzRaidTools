@@ -29,8 +29,9 @@ Build and save complete 40-player raid compositions in an eight-group roster edi
 *   Instant sort groups.
 *   Optionally force players into exact positions within each group with a slower precise sort.
 *   Quickly identify missing players and players who are not part of the selected roster.
+*   Warn when the same realm-qualified character appears in multiple roster positions.
 *   Import multiple named compositions from a single text block.
-*   Export one roster as plain names or export every saved roster with composition headers.
+*   Export one roster in selectable eight-column, paired-group, single-column, or PRT format, or export every saved roster with composition headers.
 *   Automatically refresh roster information as players join or leave the raid.
 
 ### Floating Raid Group List

@@ -26,6 +26,15 @@ local function RefreshManagedChildLayers(frame, strata)
             frame._resizeGrip:SetFrameLevel(frameLevel + 20)
         end
     end
+
+    if frame._borderOverlay then
+        if frame._borderOverlay.SetFrameStrata then
+            frame._borderOverlay:SetFrameStrata(targetStrata)
+        end
+        if frame._borderOverlay.SetFrameLevel then
+            frame._borderOverlay:SetFrameLevel(frameLevel + 10)
+        end
+    end
 end
 
 local function BringManagedFrameToFront(frame, strata)
@@ -132,7 +141,6 @@ local function CreateMainFrame()
 
     -- background
     W.AddBackground(f, 0, 0, 0, db.settings and db.settings.mainBgAlpha or 0.92)
-    W.AddBorders(f, PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3], PRT.C.BORDER[4])
 
     -- drag to move (title bar region)
     local titleBar = CreateFrame("Frame", nil, f)
@@ -188,7 +196,6 @@ local function CreateMainFrame()
             width = SIDEBAR_W,
             height = 26,
             bgColor = { 0, 0, 0, 0 },
-            hoverBgColor = { 0.15, 0.15, 0.15, 0.6 },
             selectedBgColor = PRT.C.SIDEBAR_SEL,
             borderColor = { 0, 0, 0, 0 },
             selectedBorderColor = { 0, 0, 0, 0 },
@@ -197,6 +204,8 @@ local function CreateMainFrame()
             fontSize = PRT.FONT_SIZE,
             justifyH = "LEFT",
             labelPoint = { "LEFT", 14, 0 },
+            hoverAnimation = "MRT",
+            hoverAnimationHeight = 24,
         })
         btn:SetPoint("TOPLEFT", 0, -(28 + (i - 1) * 26))
         btn.tabKey = tab.key
@@ -223,6 +232,16 @@ local function CreateMainFrame()
     sDiv:SetPoint("BOTTOMLEFT", SIDEBAR_W, 0)
     sDiv:SetWidth(1)
     sDiv:SetColorTexture(PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3], 0.8)
+
+    -- Keep the outer outline above child-frame backgrounds at every opacity.
+    local borderOverlay = CreateFrame("Frame", nil, f)
+    borderOverlay:SetAllPoints(f)
+    borderOverlay:EnableMouse(false)
+    borderOverlay:SetFrameStrata(f:GetFrameStrata())
+    borderOverlay:SetFrameLevel(f:GetFrameLevel() + 10)
+    W.AddBorders(borderOverlay,
+        PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3], PRT.C.BORDER[4])
+    f._borderOverlay = borderOverlay
 
     ---------------------------------------------------------------------------
     -- Resize grip (bottom-right corner)

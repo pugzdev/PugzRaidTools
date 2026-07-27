@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.2.0"
+PRT.VERSION = "1.2.1"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -369,6 +369,7 @@ PRT.DEFAULTS = {
         frameH           = 600,
         minimapAngle     = 195,    -- degrees; 195° = bottom-left of minimap
         lastImportShape  = "",     -- last used import shape key ("8col","2col","1col","cooked")
+        lastExportShape  = "8col", -- last used single-composition export shape
     },
     notification = {
         enabled   = true,
@@ -581,6 +582,40 @@ function PRT:BuildTarget(roster)
     return target
 end
 
+function PRT:FindDuplicateRosterSlots(roster)
+    local identities = {}
+    roster = roster or {}
+
+    for slotIndex = 1, 40 do
+        local raw = self.Trim(roster[slotIndex] or "")
+        local key = self:GetPlayerIdentityKey(raw)
+        if key ~= "" then
+            local entry = identities[key]
+            if not entry then
+                local name, realm = self:SplitNameRealm(raw, true)
+                entry = {
+                    key = key,
+                    displayName = self:MakeCharacterFullName(name, realm, true),
+                    slots = {},
+                }
+                identities[key] = entry
+            end
+            entry.slots[#entry.slots + 1] = slotIndex
+        end
+    end
+
+    local duplicatesBySlot = {}
+    for _, entry in pairs(identities) do
+        if #entry.slots > 1 then
+            for _, slotIndex in ipairs(entry.slots) do
+                duplicatesBySlot[slotIndex] = entry
+            end
+        end
+    end
+
+    return duplicatesBySlot
+end
+
 ---------------------------------------------------------------------------
 -- Import / Export
 ---------------------------------------------------------------------------
@@ -598,13 +633,58 @@ local function AppendRosterExportLines(lines, roster)
     end
 end
 
-function PRT:ExportCompRoster(name)
+function PRT:ExportRosterByShape(name, roster, shape)
+    roster = roster or {}
+    shape = shape or "8col"
+    local lines = {}
+
+    local function Slot(index)
+        local value = PRT.Trim(tostring(roster[index] or ""))
+        return value ~= "" and value or "-"
+    end
+
+    if shape == "2col" then
+        for pair = 0, 3 do
+            local leftGroup = pair * 2 + 1
+            local rightGroup = leftGroup + 1
+            for position = 1, 5 do
+                lines[#lines + 1] = table.concat({
+                    Slot((leftGroup - 1) * 5 + position),
+                    Slot((rightGroup - 1) * 5 + position),
+                }, " ")
+            end
+        end
+    elseif shape == "1col" then
+        for index = 1, 40 do
+            lines[#lines + 1] = Slot(index)
+        end
+    elseif shape == "cooked" then
+        lines[#lines + 1] = "[" .. tostring(name or "Imported") .. "]"
+        for group = 1, 8 do
+            local row = {}
+            for position = 1, 5 do
+                row[#row + 1] = Slot((group - 1) * 5 + position)
+            end
+            lines[#lines + 1] = table.concat(row, " ")
+        end
+    else
+        -- 8 columns (one per group), with five raid-position rows.
+        for position = 1, 5 do
+            local row = {}
+            for group = 1, 8 do
+                row[#row + 1] = Slot((group - 1) * 5 + position)
+            end
+            lines[#lines + 1] = table.concat(row, " ")
+        end
+    end
+
+    return table.concat(lines, "\n")
+end
+
+function PRT:ExportCompRoster(name, shape)
     local comp = self:GetComp(name)
     if not comp then return "" end
-
-    local lines = {}
-    AppendRosterExportLines(lines, comp.roster)
-    return table.concat(lines, "\n")
+    return self:ExportRosterByShape(comp.name, comp.roster, shape)
 end
 
 function PRT:ExportComps(names)
@@ -651,7 +731,7 @@ function PRT:ParseCookedImport(raw)
         if not current then return end
         for name in line:gmatch("%S+") do
             if #current.roster < 40 then
-                current.roster[#current.roster + 1] = name
+                current.roster[#current.roster + 1] = name == "-" and "" or name
             end
         end
     end
@@ -698,7 +778,7 @@ function PRT:ParseShapedImport(raw, shape)
             local words = {}
             for w in lines[row]:gmatch("%S+") do words[#words + 1] = w end
             for col = 1, math.min(8, #words) do
-                roster[(col - 1) * 5 + row] = words[col]
+                roster[(col - 1) * 5 + row] = words[col] == "-" and "" or words[col]
             end
         end
 
@@ -711,14 +791,19 @@ function PRT:ParseShapedImport(raw, shape)
             local rightG  = leftG + 1                 -- 2,4,6,8
             local words = {}
             for w in lines[i]:gmatch("%S+") do words[#words + 1] = w end
-            if words[1] and leftG  <= 8 then roster[(leftG  - 1) * 5 + pos] = words[1] end
-            if words[2] and rightG <= 8 then roster[(rightG - 1) * 5 + pos] = words[2] end
+            if words[1] and leftG <= 8 then
+                roster[(leftG - 1) * 5 + pos] = words[1] == "-" and "" or words[1]
+            end
+            if words[2] and rightG <= 8 then
+                roster[(rightG - 1) * 5 + pos] = words[2] == "-" and "" or words[2]
+            end
         end
 
     elseif shape == "1col" then
         -- Single column, 40 rows (one name per line)
         for i = 1, math.min(40, #lines) do
-            roster[i] = PRT.Trim(lines[i])
+            local value = PRT.Trim(lines[i])
+            roster[i] = value == "-" and "" or value
         end
 
     elseif shape == "cooked" then
@@ -732,7 +817,7 @@ function PRT:ParseShapedImport(raw, shape)
             local words = {}
             for w in lines[row]:gmatch("%S+") do words[#words + 1] = w end
             for col = 1, math.min(5, #words) do
-                roster[(row - 1) * 5 + col] = words[col]
+                roster[(row - 1) * 5 + col] = words[col] == "-" and "" or words[col]
             end
         end
     end

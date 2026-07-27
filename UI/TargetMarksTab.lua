@@ -412,6 +412,24 @@ function PRT:BuildTargetMarksTab()
     local btnImportGroup = W.CreateButton(panel, "Import", 58, 22)
     btnImportGroup:SetPoint("RIGHT", btnExportGroup, "LEFT", -4, 0)
 
+    local groupingTransferTooltip = {
+        anchor = "ANCHOR_TOP",
+        title = "Preset Grouping Import / Export",
+        titleColor = PRT.C.TITLE,
+        lines = {
+            {
+                "Transfers only this grouping, typically marks for one raid, battleground, or dungeon.",
+                1, 1, 1, true,
+            },
+            {
+                "For the entire Target Marks preset and all its groupings, use the Preset Import / Export buttons above.",
+                0.72, 0.72, 0.72, true,
+            },
+        },
+    }
+    W.AttachTooltip(btnImportGroup, groupingTransferTooltip)
+    W.AttachTooltip(btnExportGroup, groupingTransferTooltip)
+
     local scroll = W.CreateScrollFrame(panel, 0, 0)
     scroll:SetPoint("TOPLEFT", 12, -292)
     scroll:SetPoint("BOTTOMRIGHT", -12, 10)
