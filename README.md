@@ -98,20 +98,60 @@ Apply raid icons to NPCs by holding a configured modifier and moving the mouse o
 
 ## Invite & Loot Tools
 
-Invite & Loot Tools provides configurable raid-invite and loot-management helpers.
+The **Invite & Loot Tools** tab brings the tools used to open, manage, and finish a raid into one place.
 
-*   Add multiple exact-match, case-insensitive whisper keywords for automatic group invites.
-*   Optionally restrict keyword-triggered invites to guild members.
+### Auto Invite Keywords
+
+Add any number of invite keywords. An exact, case-insensitive whisper of one of those keywords automatically sends the player a group invite. For example, if `inv` is configured, both `inv` and `INV` work, while a longer message does not.
+
+Optional controls can:
+
+*   Restrict keyword invites to guild members.
 *   Automatically accept incoming group invites from character friends, Battle.net friends, and guild members.
-*   Block individual characters with realm-sensitive identities and review or remove them from the blocked-player window.
-*   Queue large invite waves safely while the group is still a party, convert at five members, and replay held requests after raid conversion.
-*   Automatically promote explicitly listed players or guild members at and above a selected guild rank.
-*   Prompt to compare configured and current loot settings when entering selected raids or world-boss zones as group leader.
-*   Optionally assign a configured master looter; when disabled, an existing master looter is preserved.
-*   Limit loot setup prompts to raid groups. Prompts are one-shot and do not overwrite later manual loot changes.
-*   Automatically link Epic-or-higher raid loot to group chat once per loot source, optionally including item level.
-*   Use `/prt loot` to link all items from the current loot window manually.
-*   Save the current roster while disbanding, then reinvite that snapshot later.
+*   Block individual characters from keyword invites. Blocks are realm-aware, so characters with the same name on different realms are handled separately.
+
+The blocked-player window in the tab lists every blocked character and allows individual entries to be removed. The same list can be managed with `/prt ban`, `/prt unban`, and `/prt banlist`.
+
+### Raid Invites
+
+Enable **Auto-convert to raid when party is full and auto-invite is requested** when opening a raid through keyword whispers. PRT tracks the initial outgoing invites, holds requests that would exceed the five-player party limit, converts the full party to a raid, and then retries the queued players. This prevents simultaneous whispers and pending party invitations from dropping later invite requests.
+
+This behavior can be toggled from the tab or with `/prt invites on` and `/prt invites off`, so it can remain disabled when you only want to form a party.
+
+### Raid Disband and Reinvites
+
+`/prt disband` saves a realm-aware snapshot of everyone else in the current group before disbanding it. `/prt reinv` can be used later to invite the players from that snapshot. Reinvites respect party capacity and continue after converting a full party into a raid.
+
+### Auto Promote
+
+Automatically promote selected raid members to assistant by entering character names separated by spaces or commas. You can also promote guild members at or above a selected guild-rank threshold. A player manually demoted during the current session is not immediately promoted again.
+
+### Loot Distribution Prompt
+
+Configure a preferred loot method and quality threshold, including **Common (White)**, then choose where the rule applies:
+
+*   Naxxramas
+*   Ahn'Qiraj
+*   Blackwing Lair
+*   Molten Core
+*   Zul'Gurub
+*   Ruins of Ahn'Qiraj
+*   Blasted Lands
+*   Azshara
+
+When you enter a selected zone as group leader—or receive leadership while already there—PRT shows a one-time comparison of the configured and current loot settings. Choose **Apply Configured** to apply the preset or **Keep Current Settings** to leave the group unchanged. PRT does not continuously enforce the preset, so manual changes made afterward are preserved.
+
+The prompt can be restricted to raid groups. When Master Loot is configured, automatic master-looter assignment is optional: enable it and enter a character to assign that player, or leave it disabled to preserve the current master looter. PRT will not silently replace an existing master looter.
+
+### Loot to Chat
+
+Automatically link Epic-or-higher items from raid loot windows to the appropriate group chat once per loot source. Item level can be included after each link. A typical message looks like:
+
+```text
+1: [Item Link] (76)
+```
+
+Use `/prt loot` to link every item in the currently open loot window manually, regardless of quality.
 
 ## Overall PRT Profiles
 
@@ -168,6 +208,7 @@ Manual feature toggles also produce a focused on-screen status notification.
 | <code>/prt banlist</code> |List characters blocked from keyword invites.         |
 | <code>/prt invites on</code> |Enable queued party-to-raid invites.                   |
 | <code>/prt invites off</code> |Disable queued party-to-raid invites.                  |
+| <code>/prt loot</code> |Link every item in the current loot window to group chat. |
 | <code>/prt disband</code> |Save the current group roster and disband it.          |
 | <code>/prt reinv</code> |Invite characters from the last disband snapshot.      |
 | <code>/prt reset</code> |Reset Group Auto Swap kill counters.                  |
