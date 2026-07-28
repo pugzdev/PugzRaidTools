@@ -21,59 +21,105 @@ function PRT:BuildSettingsTab()
     end)
     bgSlider:SetPoint("TOPLEFT", 12, -40)
 
+    local minimapCB = W.CreateCheckbox(panel, "Show minimap icon", function(checked)
+        local db = PRT:GetDB()
+        db.settings.showMinimapIcon = checked and true or false
+        if PRT.UpdateMinimapButtonVisibility then
+            PRT:UpdateMinimapButtonVisibility()
+        end
+    end)
+    minimapCB:SetPoint("TOPLEFT", 12, -82)
+
     ---------------------------------------------------------------------------
     -- Floating List settings
     ---------------------------------------------------------------------------
     local flHdr = W.CreateHeader(panel, "Floating Group List")
-    flHdr:SetPoint("TOPLEFT", 12, -100)
+    flHdr:SetPoint("TOPLEFT", 12, -120)
 
     local lockCB = W.CreateCheckbox(panel, "Lock position", function(checked)
         local db = PRT:GetDB()
         db.floatingList.locked = checked
         if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
     end)
-    lockCB:SetPoint("TOPLEFT", 12, -126)
+    lockCB:SetPoint("TOPLEFT", 12, -146)
 
     local hideCB = W.CreateCheckbox(panel, "Hide outside of raid", function(checked)
         local db = PRT:GetDB()
         db.floatingList.hideOutsideRaid = checked
         if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
     end)
-    hideCB:SetPoint("TOPLEFT", 12, -150)
+    hideCB:SetPoint("TOPLEFT", 12, -170)
 
     local showCB = W.CreateCheckbox(panel, "Show floating list", function(checked)
         local db = PRT:GetDB()
         db.floatingList.shown = checked
         if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
     end)
-    showCB:SetPoint("TOPLEFT", 12, -174)
+    showCB:SetPoint("TOPLEFT", 12, -194)
 
-    local fontSlider = W.CreateSlider(panel, "Font Size", 8, 24, 1, 280, function(val)
+    local mouseoverCB = W.CreateCheckbox(panel, "Only visible on mouse-over", function(checked)
         local db = PRT:GetDB()
-        db.floatingList.fontSize = val
+        db.floatingList.mouseoverOnly = checked
+        if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
+    end)
+    mouseoverCB:SetPoint("TOPLEFT", 12, -218)
+
+    local widthSlider = W.CreateExactSlider(panel, "Width", 70, 700, 1, 130,
+        function(value)
+            local db = PRT:GetDB()
+            db.floatingList.width = value
+            db.floatingList.textWidth = value
+            if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
+        end)
+    widthSlider:SetPoint("TOPLEFT", 12, -252)
+
+    local rowHeightSlider = W.CreateExactSlider(panel, "Row Height",
+        14, 90, 1, 130, function(value)
+            local db = PRT:GetDB()
+            db.floatingList.rowHeight = value
+            if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
+        end)
+    rowHeightSlider:SetPoint("TOPLEFT", 152, -252)
+
+    local fontSlider = W.CreateExactSlider(panel, "Font Size", 6, 36, 1, 130,
+        function(value)
+            local db = PRT:GetDB()
+            db.floatingList.fontSize = value
+            if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
+        end)
+    fontSlider:SetPoint("TOPLEFT", 12, -308)
+
+    local scaleSlider = W.CreateExactSlider(panel, "Scale", 0.5, 2.0, 0.05, 130,
+        function(value)
+            local db = PRT:GetDB()
+            db.floatingList.scale = value
+            if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
+        end, 2)
+    scaleSlider:SetPoint("TOPLEFT", 152, -308)
+
+    local flBgSlider = W.CreateExactSlider(panel, "Background Opacity",
+        0.0, 1.0, 0.05, 280, function(value)
+            local db = PRT:GetDB()
+            db.floatingList.bgAlpha = value
+            if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
+        end, 2)
+    flBgSlider:SetPoint("TOPLEFT", 12, -364)
+
+    local textModeLabel = W.CreateLabel(panel, "Long Text Handling:",
+        PRT.FONT_SIZE, 0.8, 0.8, 0.8)
+    textModeLabel:SetPoint("TOPLEFT", 12, -420)
+    local textModeDD = W.CreateDropdown(panel, 130, W.TEXT_OVERFLOW_ITEMS, function(value)
+        local db = PRT:GetDB()
+        db.floatingList.textMode = value
         if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
     end)
-    fontSlider:SetPoint("TOPLEFT", 12, -210)
-
-    local scaleSlider = W.CreateSlider(panel, "Scale", 0.5, 2.0, 0.05, 280, function(val)
-        local db = PRT:GetDB()
-        db.floatingList.scale = val
-        if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
-    end)
-    scaleSlider:SetPoint("TOPLEFT", 12, -340)
-
-    local flBgSlider = W.CreateSlider(panel, "List Background Opacity", 0.0, 1.0, 0.05, 280, function(val)
-        local db = PRT:GetDB()
-        db.floatingList.bgAlpha = val
-        if PRT.UpdateFloatingList then PRT:UpdateFloatingList() end
-    end)
-    flBgSlider:SetPoint("TOPLEFT", 12, -400)
+    textModeDD:SetPoint("TOPLEFT", 12, -438)
 
     -- Font outline dropdown (below font size slider)
     local outlineLabel = W.CreateLabel(panel, "Font Outline:", PRT.FONT_SIZE, 0.8, 0.8, 0.8)
-    outlineLabel:SetPoint("TOPLEFT", 12, -258)
+    outlineLabel:SetPoint("TOPLEFT", 152, -420)
 
-    local outlineDD = W.CreateDropdown(panel, 160, {
+    local outlineDD = W.CreateDropdown(panel, 130, {
         { text = "None",          value = "" },
         { text = "Outline",       value = "OUTLINE" },
         { text = "Thick Outline", value = "THICKOUTLINE" },
@@ -82,11 +128,11 @@ function PRT:BuildSettingsTab()
         db.floatingList.fontOutline = val
         if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
     end)
-    outlineDD:SetPoint("TOPLEFT", 12, -274)
+    outlineDD:SetPoint("TOPLEFT", 152, -438)
 
     -- Font color picker
     local colorLabel = W.CreateLabel(panel, "Font Color:", PRT.FONT_SIZE, 0.8, 0.8, 0.8)
-    colorLabel:SetPoint("TOPLEFT", 12, -306)
+    colorLabel:SetPoint("TOPLEFT", 12, -478)
 
     local colorSwatch = W.CreateColorSwatch(panel, {
         point = { "LEFT", colorLabel, "RIGHT", 8, 0 },
@@ -125,26 +171,6 @@ function PRT:BuildSettingsTab()
         UpdateSwatchColor()
         if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
     end)
-
-    ---------------------------------------------------------------------------
-    -- Combat Logging
-    ---------------------------------------------------------------------------
-    local clHdr = W.CreateHeader(panel, "Combat Logging")
-    clHdr:SetPoint("TOPLEFT", 12, -460)
-
-    local autologCB = W.CreateCheckbox(panel, "Auto combat log", function(checked)
-        local db = PRT:GetDB()
-        db.autoLog.enabled = checked
-        PRT:UpdateAutoLogListeners()
-    end)
-    autologCB:SetPoint("TOPLEFT", 12, -486)
-    W.AttachTooltip(autologCB.check, {
-        anchor = "ANCHOR_TOP",
-        lines = {
-            { "Automatically starts combat logging when you enter a raid instance.", 1, 1, 1, true },
-            { "Stops logging when you leave. Only stops logging if PugzRaidTools started it.", 0.72, 0.72, 0.72, true },
-        },
-    })
 
     ---------------------------------------------------------------------------
     -- Group Swap Settings (right column, x = 310)
@@ -244,6 +270,39 @@ function PRT:BuildSettingsTab()
         UpdateNotifSwatchColor()
     end)
 
+    local notifTest = W.CreateButton(panel, "Test Notification", 130, 22)
+    notifTest:SetPoint("TOPLEFT", RX, -352)
+    notifTest:SetScript("OnClick", function()
+        local cfg = PRT:GetDB().notification or {}
+        if PRT.ShowNotification then
+            PRT:ShowNotification("Test Group Swap applied.", {
+                force = true,
+                playSound = cfg.sound and true or false,
+                soundFile = PRT.SND_MARIO,
+            })
+        end
+    end)
+
+    ---------------------------------------------------------------------------
+    -- Combat Logging
+    ---------------------------------------------------------------------------
+    local clHdr = W.CreateHeader(panel, "Combat Logging")
+    clHdr:SetPoint("TOPLEFT", RX, -390)
+
+    local autologCB = W.CreateCheckbox(panel, "Auto combat log", function(checked)
+        local db = PRT:GetDB()
+        db.autoLog.enabled = checked
+        PRT:UpdateAutoLogListeners()
+    end)
+    autologCB:SetPoint("TOPLEFT", RX, -416)
+    W.AttachTooltip(autologCB.check, {
+        anchor = "ANCHOR_TOP",
+        lines = {
+            { "Automatically starts combat logging when you enter a raid instance.", 1, 1, 1, true },
+            { "Stops logging when you leave. Only stops logging if PugzRaidTools started it.", 0.72, 0.72, 0.72, true },
+        },
+    })
+
     ---------------------------------------------------------------------------
     -- Version / info
     ---------------------------------------------------------------------------
@@ -256,12 +315,21 @@ function PRT:BuildSettingsTab()
     function panel:OnShow()
         local db = PRT:GetDB()
         bgSlider:SetValue(db.settings.mainBgAlpha or 0.92)
+        minimapCB:SetChecked(db.settings.showMinimapIcon ~= false)
         lockCB:SetChecked(db.floatingList.locked)
         hideCB:SetChecked(db.floatingList.hideOutsideRaid)
         showCB:SetChecked(db.floatingList.shown)
-        fontSlider:SetValue(db.floatingList.fontSize or 14)
-        scaleSlider:SetValue(db.floatingList.scale or 1.0)
-        flBgSlider:SetValue(db.floatingList.bgAlpha or 0.7)
+        mouseoverCB:SetChecked(db.floatingList.mouseoverOnly)
+        widthSlider:SetExactValue(
+            db.floatingList.width or db.floatingList.textWidth or 180)
+        rowHeightSlider:SetExactValue(db.floatingList.rowHeight or 20)
+        fontSlider:SetExactValue(db.floatingList.fontSize or 14)
+        if db.floatingList.textMode == "wrap" then
+            db.floatingList.textMode = "truncate"
+        end
+        textModeDD:SetSelected(db.floatingList.textMode or "expand")
+        scaleSlider:SetExactValue(db.floatingList.scale or 1.0)
+        flBgSlider:SetExactValue(db.floatingList.bgAlpha or 0.7)
         outlineDD:SetSelected(db.floatingList.fontOutline or "OUTLINE")
         UpdateSwatchColor()
 

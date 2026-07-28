@@ -56,6 +56,10 @@ PRT.INVITE_LOOT_ZONES = {
     { key = "aq20",         name = "Ruins of Ahn'Qiraj",    instanceId = 509 },
     { key = "blastedLands", name = "Blasted Lands",         uiMapId = 1419 },
     { key = "azshara",      name = "Azshara",               uiMapId = 1447 },
+    { key = "ashenvale",    name = "Ashenvale",              uiMapId = 1440 },
+    { key = "hinterlands",  name = "The Hinterlands",        uiMapId = 1425 },
+    { key = "duskwood",     name = "Duskwood",               uiMapId = 1431 },
+    { key = "feralas",      name = "Feralas",                uiMapId = 1444 },
 }
 
 local lootMethodByValue = {}
@@ -81,6 +85,368 @@ end
 
 local function GetConfig()
     return PRT:GetDB().inviteTools
+end
+
+local RefreshPanel
+
+local function GetInviteBanStore()
+    local store = GetConfig()
+    local legacy = type(store.autoInvite) == "table"
+        and type(store.autoInvite.bannedPlayers) == "table"
+        and store.autoInvite.bannedPlayers
+        or nil
+    if type(store.bannedPlayers) ~= "table" then store.bannedPlayers = {} end
+    if legacy and legacy ~= store.bannedPlayers then
+        for identityKey, entry in pairs(legacy) do
+            if store.bannedPlayers[identityKey] == nil then
+                store.bannedPlayers[identityKey] = entry
+            end
+        end
+    end
+    if type(store.autoInvite) == "table" then
+        store.autoInvite.bannedPlayers = nil
+    end
+    return store.bannedPlayers
+end
+
+local function DeepCopy(value, seen)
+    if type(value) ~= "table" then return value end
+    seen = seen or {}
+    if seen[value] then return seen[value] end
+    local copy = {}
+    seen[value] = copy
+    for key, child in pairs(value) do
+        copy[DeepCopy(key, seen)] = DeepCopy(child, seen)
+    end
+    return copy
+end
+
+local function Bool(value, fallback)
+    if value == nil then return fallback and true or false end
+    return value and true or false
+end
+
+local function NormalizeCustomZones(zones)
+    local normalized = {}
+    local seen = {}
+    for _, zone in ipairs(type(zones) == "table" and zones or {}) do
+        local name
+        local uiMapId
+        if type(zone) == "table" then
+            name = PRT.Trim(tostring(zone.name or ""))
+            uiMapId = tonumber(zone.uiMapId)
+        else
+            name = PRT.Trim(tostring(zone or ""))
+        end
+        local key = string.lower(name)
+        if name ~= "" and not seen[key] then
+            seen[key] = true
+            normalized[#normalized + 1] = {
+                name = name,
+                uiMapId = uiMapId,
+            }
+        end
+    end
+    return normalized
+end
+
+local function NormalizeInviteToolsPreset(preset)
+    preset = type(preset) == "table" and preset or {}
+    preset.name = PRT.Trim(tostring(preset.name or ""))
+    if preset.name == "" then preset.name = "Preset" end
+
+    local autoInvite = type(preset.autoInvite) == "table" and preset.autoInvite or {}
+    autoInvite.enabled = Bool(autoInvite.enabled, false)
+    autoInvite.keywords = type(autoInvite.keywords) == "table" and autoInvite.keywords or { "inv" }
+    autoInvite.guildOnly = Bool(autoInvite.guildOnly, false)
+    autoInvite.autoAcceptTrusted = Bool(autoInvite.autoAcceptTrusted, false)
+    autoInvite.raidInvites = type(autoInvite.raidInvites) == "table" and autoInvite.raidInvites or {}
+    autoInvite.raidInvites.enabled = Bool(autoInvite.raidInvites.enabled, false)
+    autoInvite.bannedPlayers = nil
+    preset.autoInvite = autoInvite
+
+    local autoPromote = type(preset.autoPromote) == "table" and preset.autoPromote or {}
+    autoPromote.enabled = Bool(autoPromote.enabled, false)
+    autoPromote.names = tostring(autoPromote.names or "")
+    autoPromote.guildRankThreshold = tonumber(autoPromote.guildRankThreshold) or 0
+    preset.autoPromote = autoPromote
+
+    local loot = type(preset.loot) == "table" and preset.loot or {}
+    loot.enabled = Bool(loot.enabled, false)
+    loot.method = lootMethodByValue[loot.method] and loot.method or "group"
+    loot.assignMasterLooter = Bool(loot.assignMasterLooter, false)
+    loot.masterLooter = PRT.Trim(tostring(loot.masterLooter or ""))
+    loot.threshold = tonumber(loot.threshold) or 1
+    if not lootThresholdByValue[loot.threshold] then loot.threshold = 1 end
+    loot.onlyInRaid = Bool(loot.onlyInRaid, true)
+    loot.zones = type(loot.zones) == "table" and loot.zones or {}
+    for _, zone in ipairs(PRT.INVITE_LOOT_ZONES) do
+        loot.zones[zone.key] = Bool(loot.zones[zone.key], false)
+    end
+    loot.customZones = NormalizeCustomZones(loot.customZones)
+    preset.loot = loot
+
+    local lootToChat = type(preset.lootToChat) == "table" and preset.lootToChat or {}
+    lootToChat.enabled = Bool(lootToChat.enabled, false)
+    lootToChat.includeItemLevel = Bool(lootToChat.includeItemLevel, false)
+    preset.lootToChat = lootToChat
+    return preset
+end
+
+local function SnapshotInviteToolsPreset(name, source)
+    source = source or GetConfig()
+    return NormalizeInviteToolsPreset({
+        name = name,
+        autoInvite = DeepCopy(source.autoInvite),
+        autoPromote = DeepCopy(source.autoPromote),
+        loot = DeepCopy(source.loot),
+        lootToChat = DeepCopy(source.lootToChat),
+    })
+end
+
+local function FindInviteToolsPreset(store, name)
+    for _, preset in ipairs(store and store.presets or {}) do
+        if preset.name == name then return preset end
+    end
+end
+
+local function MakeUniqueInviteToolsPresetName(store, requested)
+    local base = PRT.Trim(tostring(requested or ""))
+    if base == "" then base = "Imported Preset" end
+    if not FindInviteToolsPreset(store, base) then return base end
+    local suffix = 2
+    while FindInviteToolsPreset(store, base .. " (" .. suffix .. ")") do
+        suffix = suffix + 1
+    end
+    return base .. " (" .. suffix .. ")"
+end
+
+function PRT:EnsureInviteToolsPresetDefaults()
+    local store = GetConfig()
+    store.enabled = Bool(store.enabled, true)
+    store.presets = type(store.presets) == "table" and store.presets or {}
+    store.activePreset = tostring(store.activePreset or "")
+    GetInviteBanStore()
+
+    for index, preset in ipairs(store.presets) do
+        store.presets[index] = NormalizeInviteToolsPreset(preset)
+    end
+    if #store.presets == 0 then
+        store.presets[1] = SnapshotInviteToolsPreset("Default", store)
+    end
+    if not FindInviteToolsPreset(store, store.activePreset) then
+        store.activePreset = store.presets[1].name
+    end
+end
+
+function PRT:GetInviteToolsPreset(name)
+    return FindInviteToolsPreset(GetConfig(), name)
+end
+
+function PRT:GetActiveInviteToolsPreset()
+    local store = GetConfig()
+    return FindInviteToolsPreset(store, store.activePreset)
+end
+
+function PRT:CreateInviteToolsPreset(name)
+    self:EnsureInviteToolsPresetDefaults()
+    local store = GetConfig()
+    local cleanName = PRT.Trim(tostring(name or ""))
+    if cleanName == "" then return nil, "Enter a preset name." end
+    if FindInviteToolsPreset(store, cleanName) then
+        return nil, "An Invite & Loot preset with that name already exists."
+    end
+    local preset = SnapshotInviteToolsPreset(cleanName, store)
+    store.presets[#store.presets + 1] = preset
+    return preset
+end
+
+function PRT:RenameInviteToolsPreset(oldName, newName)
+    self:EnsureInviteToolsPresetDefaults()
+    local store = GetConfig()
+    local preset = FindInviteToolsPreset(store, oldName)
+    local cleanName = PRT.Trim(tostring(newName or ""))
+    if not preset then return false, "That Invite & Loot preset no longer exists." end
+    if cleanName == "" then return false, "Enter a preset name." end
+    local existing = FindInviteToolsPreset(store, cleanName)
+    if existing and existing ~= preset then
+        return false, "An Invite & Loot preset with that name already exists."
+    end
+
+    preset.name = cleanName
+    if store.activePreset == oldName then store.activePreset = cleanName end
+    if self.RenamePRTProfilePresetReference then
+        self:RenamePRTProfilePresetReference("inviteTools", oldName, cleanName)
+    end
+    return true
+end
+
+function PRT:DeleteInviteToolsPreset(name)
+    self:EnsureInviteToolsPresetDefaults()
+    local store = GetConfig()
+    if #store.presets <= 1 then
+        return false, "At least one Invite & Loot preset must remain."
+    end
+
+    local removedIndex
+    for index, preset in ipairs(store.presets) do
+        if preset.name == name then
+            removedIndex = index
+            break
+        end
+    end
+    if not removedIndex then return false, "That Invite & Loot preset no longer exists." end
+
+    table.remove(store.presets, removedIndex)
+    local replacement = store.presets[math.min(removedIndex, #store.presets)] or store.presets[1]
+    if self.RemovePRTProfilePresetReference then
+        self:RemovePRTProfilePresetReference("inviteTools", name, replacement and replacement.name or "")
+    end
+    if store.activePreset == name and replacement then
+        self:ActivateInviteToolsPreset(replacement.name)
+    end
+    return true
+end
+
+function PRT:ActivateInviteToolsPreset(name, refreshUI, runAutomation)
+    self:EnsureInviteToolsPresetDefaults()
+    local store = GetConfig()
+    local preset = FindInviteToolsPreset(store, name)
+    if not preset then return false end
+
+    store.activePreset = preset.name
+    store.autoInvite = preset.autoInvite
+    store.autoPromote = preset.autoPromote
+    store.loot = preset.loot
+    store.lootToChat = preset.lootToChat
+
+    if self.UpdateInviteToolsListeners then self:UpdateInviteToolsListeners() end
+    if runAutomation ~= false then
+        if store.enabled and store.autoPromote.enabled and self.RequestAutoPromote then
+            self:RequestAutoPromote()
+        end
+        if store.enabled and store.loot.enabled and self.ResetInviteLootPromptState then
+            self:ResetInviteLootPromptState()
+        end
+    end
+    if refreshUI ~= false then
+        if self.inviteToolsPanel and self.inviteToolsPanel.Refresh then
+            self.inviteToolsPanel:Refresh()
+        end
+        if self.profilesPanel and self.profilesPanel.RefreshProfilesView then
+            self.profilesPanel:RefreshProfilesView()
+        end
+    end
+    return true
+end
+
+local function EncodeInviteField(value)
+    return tostring(value or ""):gsub("([^%w%-%._ ])", function(char)
+        return ("%%%02X"):format(string.byte(char))
+    end)
+end
+
+local function DecodeInviteField(value)
+    return tostring(value or ""):gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end)
+end
+
+local function ParseBool(value)
+    if value == "true" then return true end
+    if value == "false" then return false end
+end
+
+function PRT:ExportInviteToolsPreset(preset)
+    preset = NormalizeInviteToolsPreset(DeepCopy(preset or self:GetActiveInviteToolsPreset()))
+    if not preset then return "" end
+
+    local lines = {
+        "[InviteLootPreset: " .. EncodeInviteField(preset.name) .. "]",
+        "formatVersion=1",
+        "autoInviteEnabled=" .. tostring(preset.autoInvite.enabled),
+        "guildOnly=" .. tostring(preset.autoInvite.guildOnly),
+        "autoAcceptTrusted=" .. tostring(preset.autoInvite.autoAcceptTrusted),
+        "raidInvitesEnabled=" .. tostring(preset.autoInvite.raidInvites.enabled),
+    }
+    for _, keyword in ipairs(preset.autoInvite.keywords) do
+        lines[#lines + 1] = "keyword=" .. EncodeInviteField(keyword)
+    end
+    lines[#lines + 1] = "autoPromoteEnabled=" .. tostring(preset.autoPromote.enabled)
+    lines[#lines + 1] = "autoPromoteNames=" .. EncodeInviteField(preset.autoPromote.names)
+    lines[#lines + 1] = "guildRankThreshold=" .. tostring(preset.autoPromote.guildRankThreshold)
+    lines[#lines + 1] = "lootPromptEnabled=" .. tostring(preset.loot.enabled)
+    lines[#lines + 1] = "lootMethod=" .. tostring(preset.loot.method)
+    lines[#lines + 1] = "assignMasterLooter=" .. tostring(preset.loot.assignMasterLooter)
+    lines[#lines + 1] = "masterLooter=" .. EncodeInviteField(preset.loot.masterLooter)
+    lines[#lines + 1] = "lootThreshold=" .. tostring(preset.loot.threshold)
+    lines[#lines + 1] = "onlyInRaid=" .. tostring(preset.loot.onlyInRaid)
+    for _, zone in ipairs(PRT.INVITE_LOOT_ZONES) do
+        lines[#lines + 1] = "zone." .. zone.key .. "=" .. tostring(preset.loot.zones[zone.key] and true or false)
+    end
+    for _, zone in ipairs(preset.loot.customZones) do
+        lines[#lines + 1] = "customZone=" .. EncodeInviteField(zone.name)
+            .. "|" .. tostring(zone.uiMapId or "")
+    end
+    lines[#lines + 1] = "lootToChatEnabled=" .. tostring(preset.lootToChat.enabled)
+    lines[#lines + 1] = "includeItemLevel=" .. tostring(preset.lootToChat.includeItemLevel)
+    return table.concat(lines, "\n")
+end
+
+function PRT:ParseInviteToolsPresetString(raw)
+    raw = tostring(raw or ""):gsub("\r\n", "\n"):gsub("\r", "\n")
+    local encodedName = raw:match("^%s*%[InviteLootPreset:%s*(.-)%]%s*\n")
+    if not encodedName then return nil, "No [InviteLootPreset: Name] header was found." end
+
+    local defaults = PRT.DEFAULTS and PRT.DEFAULTS.inviteTools or {}
+    local preset = SnapshotInviteToolsPreset(DecodeInviteField(encodedName), defaults)
+    preset.autoInvite.keywords = {}
+    preset.loot.customZones = {}
+    for line in raw:gmatch("[^\n]+") do
+        local key, value = line:match("^([^=]+)=(.*)$")
+        if key == "autoInviteEnabled" then preset.autoInvite.enabled = ParseBool(value)
+        elseif key == "guildOnly" then preset.autoInvite.guildOnly = ParseBool(value)
+        elseif key == "autoAcceptTrusted" then preset.autoInvite.autoAcceptTrusted = ParseBool(value)
+        elseif key == "raidInvitesEnabled" then preset.autoInvite.raidInvites.enabled = ParseBool(value)
+        elseif key == "keyword" then preset.autoInvite.keywords[#preset.autoInvite.keywords + 1] = DecodeInviteField(value)
+        elseif key == "autoPromoteEnabled" then preset.autoPromote.enabled = ParseBool(value)
+        elseif key == "autoPromoteNames" then preset.autoPromote.names = DecodeInviteField(value)
+        elseif key == "guildRankThreshold" then preset.autoPromote.guildRankThreshold = tonumber(value) or 0
+        elseif key == "lootPromptEnabled" then preset.loot.enabled = ParseBool(value)
+        elseif key == "lootMethod" then preset.loot.method = value
+        elseif key == "assignMasterLooter" then preset.loot.assignMasterLooter = ParseBool(value)
+        elseif key == "masterLooter" then preset.loot.masterLooter = DecodeInviteField(value)
+        elseif key == "lootThreshold" then preset.loot.threshold = tonumber(value) or 1
+        elseif key == "onlyInRaid" then preset.loot.onlyInRaid = ParseBool(value)
+        elseif key and key:match("^zone%.") then
+            preset.loot.zones[key:sub(6)] = ParseBool(value)
+        elseif key == "customZone" then
+            local nameValue, mapValue = value:match("^(.-)|(%d*)$")
+            preset.loot.customZones[#preset.loot.customZones + 1] = {
+                name = DecodeInviteField(nameValue or value),
+                uiMapId = tonumber(mapValue),
+            }
+        elseif key == "lootToChatEnabled" then preset.lootToChat.enabled = ParseBool(value)
+        elseif key == "includeItemLevel" then preset.lootToChat.includeItemLevel = ParseBool(value)
+        end
+    end
+    return NormalizeInviteToolsPreset(preset)
+end
+
+function PRT:ImportInviteToolsPreset(raw)
+    local preset, err = self:ParseInviteToolsPresetString(raw)
+    if not preset then return nil, err end
+    self:EnsureInviteToolsPresetDefaults()
+    local store = GetConfig()
+    preset.name = MakeUniqueInviteToolsPresetName(store, preset.name)
+    store.presets[#store.presets + 1] = preset
+    self:ActivateInviteToolsPreset(preset.name)
+    return preset
+end
+
+function PRT:InitInviteToolsPresets()
+    self:EnsureInviteToolsPresetDefaults()
+    self:ActivateInviteToolsPreset(GetConfig().activePreset, false, false)
 end
 
 local function Now()
@@ -152,7 +518,7 @@ local function SendChatMessageCompat(message, chatType, target)
     return false
 end
 
-local function RefreshPanel()
+RefreshPanel = function()
     if PRT.inviteToolsPanel and PRT.inviteToolsPanel.Refresh then
         PRT.inviteToolsPanel:Refresh()
     end
@@ -197,7 +563,7 @@ end
 
 function PRT:GetInviteBanEntries()
     local entries = {}
-    local blocked = GetConfig().autoInvite.bannedPlayers
+    local blocked = GetInviteBanStore()
     for identityKey, value in pairs(blocked) do
         local name
         local realm
@@ -231,7 +597,7 @@ function PRT:AddInviteBan(fullName)
     end
 
     local identityKey = self:MakePlayerIdentityKey(name, realm)
-    local blocked = GetConfig().autoInvite.bannedPlayers
+    local blocked = GetInviteBanStore()
     local displayName = self:MakeCharacterFullName(name, realm, true)
     if blocked[identityKey] then
         PRT.Print(displayName .. " is already blocked from keyword invites.")
@@ -246,7 +612,7 @@ end
 
 function PRT:RemoveInviteBan(fullName)
     local identityKey = self:GetPlayerIdentityKey(fullName)
-    local blocked = GetConfig().autoInvite.bannedPlayers
+    local blocked = GetInviteBanStore()
     if identityKey == "" or not blocked[identityKey] then
         PRT.Print((fullName or "Player") .. " is not on the invite block list.")
         return false
@@ -264,7 +630,7 @@ function PRT:RemoveInviteBan(fullName)
 end
 
 function PRT:RemoveInviteBanByKey(identityKey)
-    local blocked = GetConfig().autoInvite.bannedPlayers
+    local blocked = GetInviteBanStore()
     local value = blocked[identityKey]
     if not value then return false end
     blocked[identityKey] = nil
@@ -279,7 +645,7 @@ end
 
 function PRT:IsInviteBanned(fullName)
     local identityKey = self:GetPlayerIdentityKey(fullName)
-    return identityKey ~= "" and GetConfig().autoInvite.bannedPlayers[identityKey] ~= nil
+    return identityKey ~= "" and GetInviteBanStore()[identityKey] ~= nil
 end
 
 function PRT:PrintInviteBanList()
@@ -420,8 +786,10 @@ local function HideAcceptedInvitePopup()
 end
 
 function PRT:HandleTrustedInviteRequest(inviterName, inviterGuid, retried)
-    local cfg = GetConfig().autoInvite
-    if not cfg.autoAcceptTrusted or IsSecret(inviterName) or IsSecret(inviterGuid) then return false end
+    local store = GetConfig()
+    local cfg = store.autoInvite
+    if store.enabled == false or not cfg.autoAcceptTrusted
+        or IsSecret(inviterName) or IsSecret(inviterGuid) then return false end
 
     local isFriend = self:IsInviteFriend(inviterName, inviterGuid)
     local isGuildMember = self:IsInviteGuildMember(inviterName, inviterGuid)
@@ -550,9 +918,10 @@ end
 
 function PRT:ProcessRaidInviteQueue()
     local state = self._raidInviteQueueState
-    local cfg = GetConfig().autoInvite
+    local store = GetConfig()
+    local cfg = store.autoInvite
     if not state then return end
-    if not cfg.enabled or not self:GetRaidInvitesEnabled() then
+    if store.enabled == false or not cfg.enabled or not self:GetRaidInvitesEnabled() then
         self:ClearRaidInviteQueue()
         return
     end
@@ -659,6 +1028,7 @@ function PRT:ProcessRaidInviteQueue()
 end
 
 function PRT:QueueRaidInvite(sender)
+    if GetConfig().enabled == false then return false end
     local name, realm = self:SplitNameRealm(sender, true)
     local identityKey = self:MakePlayerIdentityKey(name, realm)
     if identityKey == "" then return false end
@@ -697,15 +1067,17 @@ function PRT:QueueRaidInvite(sender)
 end
 
 function PRT:HandleAutoInviteWhisper(message, sender, senderGuid, guildRetry)
-    local cfg = GetConfig().autoInvite
-    if not cfg.enabled or IsSecret(message) or IsSecret(sender) then return false end
+    local store = GetConfig()
+    local cfg = store.autoInvite
+    if store.enabled == false or not cfg.enabled
+        or IsSecret(message) or IsSecret(sender) then return false end
 
     local keyword = CanonicalKeyword(message)
     if keyword == "" or not BuildKeywordLookup()[keyword] then return false end
 
     local senderKey = self:GetPlayerIdentityKey(sender)
     if senderKey == "" or senderKey == self:GetUnitIdentityKey("player") then return false end
-    if cfg.bannedPlayers[senderKey] then return false end
+    if GetInviteBanStore()[senderKey] then return false end
 
     if cfg.guildOnly then
         local isGuildMember = self:IsInviteGuildMember(sender, senderGuid)
@@ -771,8 +1143,10 @@ local function BuildGuildPromoteLookup(threshold)
 end
 
 function PRT:RunAutoPromote()
-    local cfg = GetConfig().autoPromote
-    if not cfg.enabled or not IsInRaid or not IsInRaid() or not IsGroupLeader() then return end
+    local store = GetConfig()
+    local cfg = store.autoPromote
+    if store.enabled == false or not cfg.enabled
+        or not IsInRaid or not IsInRaid() or not IsGroupLeader() then return end
     if not PromoteToAssistant then return end
 
     local explicit = BuildPromoteNameLookup()
@@ -815,7 +1189,76 @@ function PRT:GetCurrentInviteLootZone()
     local zoneName
     if GetRealZoneText then zoneName = GetRealZoneText() end
     if (not zoneName or zoneName == "") and GetZoneText then zoneName = GetZoneText() end
-    return lootZoneByName[string.lower(zoneName or "")]
+    zoneName = PRT.Trim(zoneName or "")
+    zone = lootZoneByName[string.lower(zoneName)]
+    if zone then return zone end
+
+    local cfg = GetConfig().loot
+    for index, customZone in ipairs(cfg.customZones or {}) do
+        if (customZone.uiMapId and customZone.uiMapId == uiMapId)
+                or string.lower(customZone.name or "") == string.lower(zoneName) then
+            return {
+                key = "custom:" .. string.lower(customZone.name),
+                name = customZone.name,
+                uiMapId = customZone.uiMapId,
+                customIndex = index,
+            }
+        end
+    end
+end
+
+function PRT:IsInviteLootZoneEnabled(zone, cfg)
+    if not zone then return false end
+    cfg = cfg or GetConfig().loot
+    if zone.customIndex then return cfg.customZones and cfg.customZones[zone.customIndex] ~= nil end
+    return cfg.zones and cfg.zones[zone.key] and true or false
+end
+
+function PRT:GetCurrentWorldZoneInfo()
+    local name
+    if GetRealZoneText then name = GetRealZoneText() end
+    if (not name or name == "") and GetZoneText then name = GetZoneText() end
+    local uiMapId = C_Map and C_Map.GetBestMapForUnit and C_Map.GetBestMapForUnit("player")
+    return PRT.Trim(name or ""), tonumber(uiMapId)
+end
+
+function PRT:AddInviteLootCustomZone(name, uiMapId)
+    local cfg = GetConfig().loot
+    name = PRT.Trim(tostring(name or ""))
+    if name == "" then return false, "Enter a zone name first." end
+    local normalizedName = string.lower(name)
+    if lootZoneByName[normalizedName] then
+        return false, name .. " is already available in the default zone list."
+    end
+    for _, zone in ipairs(cfg.customZones or {}) do
+        if string.lower(zone.name or "") == normalizedName then
+            return false, name .. " is already in the custom zone list."
+        end
+    end
+    cfg.customZones = cfg.customZones or {}
+    cfg.customZones[#cfg.customZones + 1] = {
+        name = name,
+        uiMapId = tonumber(uiMapId),
+    }
+    RefreshPanel()
+    self:ResetInviteLootPromptState()
+    return true
+end
+
+function PRT:AddCurrentInviteLootCustomZone()
+    local name, uiMapId = self:GetCurrentWorldZoneInfo()
+    if name == "" then return false, "The current zone could not be identified." end
+    return self:AddInviteLootCustomZone(name, uiMapId)
+end
+
+function PRT:RemoveInviteLootCustomZone(index)
+    local cfg = GetConfig().loot
+    index = tonumber(index)
+    if not index or not cfg.customZones or not cfg.customZones[index] then return false end
+    table.remove(cfg.customZones, index)
+    RefreshPanel()
+    self:ResetInviteLootPromptState()
+    return true
 end
 
 local function GetLootMethodCompat()
@@ -882,7 +1325,11 @@ function PRT:GetInviteLootDescription()
             description = description .. "\nMaster looter: "
                 .. (masterLooter ~= "" and masterLooter or "Not configured")
         else
-            description = description .. "\nMaster looter: Keep current"
+            local current = self:GetCurrentInviteLootSettings()
+            local currentName = current.method.value == "master"
+                and (current.masterLooter or "Unknown")
+                or "none; game default when enabling Master Loot"
+            description = description .. "\nMaster looter: Keep current (" .. currentName .. ")"
         end
     end
     return description .. "\nLoot threshold: " .. threshold.text
@@ -902,9 +1349,14 @@ function PRT:ResolveInviteMasterLooter()
 end
 
 function PRT:ApplyInviteLootSettings()
-    local cfg = GetConfig().loot
+    local store = GetConfig()
+    local cfg = store.loot
     local zone = self:GetCurrentInviteLootZone()
-    if not cfg.enabled or not zone or not cfg.zones[zone.key] then
+    if store.enabled == false then
+        PRT.Print("Loot settings were not applied because Invite & Loot automation is disabled.")
+        return false
+    end
+    if not cfg.enabled or not self:IsInviteLootZoneEnabled(zone, cfg) then
         PRT.Print("Loot settings were not applied because this zone is no longer enabled.")
         return false
     end
@@ -920,7 +1372,7 @@ function PRT:ApplyInviteLootSettings()
     local method = lootMethodByValue[cfg.method] or lootMethodByValue.group
     local current = self:GetCurrentInviteLootSettings()
     local masterName
-    local setLootMethod = true
+    local setLootMethod = current.method.value ~= method.value
     if method.value == "master" then
         if cfg.assignMasterLooter then
             local configuredName
@@ -934,14 +1386,23 @@ function PRT:ApplyInviteLootSettings()
                 end
                 return false
             end
+            if current.method.value == "master"
+                    and self:GetPlayerIdentityKey(current.masterLooter or "")
+                        == self:GetPlayerIdentityKey(masterName) then
+                setLootMethod = false
+            else
+                setLootMethod = true
+            end
         elseif current.method.value == "master" then
             -- Keep the active master looter exactly as-is. Calling SetLootMethod
             -- with no assignee can cause the client to default back to the leader.
             setLootMethod = false
             masterName = current.masterLooter
         else
-            PRT.Print("Master Loot is not currently active. Enable automatic master-looter assignment and choose a player, or set it manually before applying.")
-            return false
+            -- Enabling Master Loot without an explicit assignee lets the game
+            -- choose its normal default master looter.
+            setLootMethod = true
+            masterName = nil
         end
     end
 
@@ -963,20 +1424,32 @@ function PRT:ApplyInviteLootSettings()
     end
 
     local threshold = tonumber(cfg.threshold) or 1
-    C_Timer.After(0.5, function()
-        if SetLootThreshold and IsGroupLeader() then
-            local thresholdOk, thresholdErr = pcall(SetLootThreshold, threshold)
-            if thresholdOk == false then
-                PRT.Print("Unable to set loot threshold: " .. tostring(thresholdErr))
+    local setLootThreshold = tonumber(current.threshold.value) ~= threshold
+    if setLootThreshold then
+        C_Timer.After(setLootMethod and 0.5 or 0, function()
+            if SetLootThreshold and IsGroupLeader() then
+                local thresholdOk, thresholdErr = pcall(SetLootThreshold, threshold)
+                if thresholdOk == false then
+                    PRT.Print("Unable to set loot threshold: " .. tostring(thresholdErr))
+                end
             end
-        end
-    end)
+        end)
+    end
 
     local methodSummary = method.text
     if method.value == "master" then
-        methodSummary = methodSummary .. (cfg.assignMasterLooter
-            and (" (" .. masterName .. ")")
-            or (" (kept " .. (masterName or "current master looter") .. ")"))
+        if cfg.assignMasterLooter then
+            methodSummary = methodSummary .. " (" .. masterName .. ")"
+        elseif current.method.value == "master" then
+            methodSummary = methodSummary .. " (kept "
+                .. (masterName or "current master looter") .. ")"
+        else
+            methodSummary = methodSummary .. " (game default master looter)"
+        end
+    end
+    if not setLootMethod and not setLootThreshold then
+        PRT.Print("Configured loot settings are already active; no changes were needed.")
+        return true
     end
     PRT.Print(("Applied %s with %s threshold."):format(
         methodSummary, (lootThresholdByValue[threshold] or lootThresholdByValue[1]).plainText))
@@ -1016,7 +1489,10 @@ function PRT:ShowInviteLootPrompt(zone)
         local masterLooter = PRT.Trim(cfg.masterLooter or "")
         local masterText
         if not cfg.assignMasterLooter then
-            masterText = "|cffffffffKeep current|r"
+            local currentName = current.method.value == "master"
+                and (current.masterLooter or "Unknown")
+                or "none; game default when enabling Master Loot"
+            masterText = "|cffffffffKeep current (" .. currentName .. ")|r"
         elseif masterLooter == "" then
             masterText = "|cffff5555Not configured|r"
         else
@@ -1048,7 +1524,8 @@ function PRT:ShowInviteLootPrompt(zone)
 end
 
 function PRT:CheckInviteLootPrompt(force)
-    local cfg = GetConfig().loot
+    local store = GetConfig()
+    local cfg = store.loot
     local zone = self:GetCurrentInviteLootZone()
     local zoneKey = zone and zone.key or ""
     local leader = IsGrouped() and IsGroupLeader() or false
@@ -1058,7 +1535,8 @@ function PRT:CheckInviteLootPrompt(force)
     self._inviteLootLastZoneKey = zoneKey
     self._inviteLootWasLeader = leader
 
-    if not cfg.enabled or not zone or not cfg.zones[zone.key] then return end
+    if store.enabled == false or not cfg.enabled
+        or not self:IsInviteLootZoneEnabled(zone, cfg) then return end
     if not leader or (cfg.onlyInRaid and (not IsInRaid or not IsInRaid())) then return end
     if not force and not zoneChanged and not becameLeader then return end
     if self._inviteLootPromptOpen then return end
@@ -1098,8 +1576,9 @@ local function GetLootItemLevel(itemLink)
 end
 
 function PRT:LinkLootToChat(linkCurrentWindow)
-    local cfg = GetConfig().lootToChat or {}
-    if not linkCurrentWindow and not cfg.enabled then return 0 end
+    local store = GetConfig()
+    local cfg = store.lootToChat or {}
+    if not linkCurrentWindow and (store.enabled == false or not cfg.enabled) then return 0 end
     if not GetNumLootItems or not GetLootSlotLink or not GetLootSlotInfo then
         if linkCurrentWindow then PRT.Print("This client does not expose the loot-window API.") end
         return 0
@@ -1391,7 +1870,8 @@ end
 ---------------------------------------------------------------------------
 function PRT:UpdateInviteToolsListeners()
     local cfg = GetConfig()
-    if (not cfg.autoInvite.enabled or not self:GetRaidInvitesEnabled())
+    local automationEnabled = cfg.enabled ~= false
+    if (not automationEnabled or not cfg.autoInvite.enabled or not self:GetRaidInvitesEnabled())
         and self._raidInviteQueueState then
         self:ClearRaidInviteQueue()
     end
@@ -1400,22 +1880,22 @@ function PRT:UpdateInviteToolsListeners()
     if not frame then return end
     frame:UnregisterAllEvents()
 
-    if cfg.autoInvite.enabled then
+    if automationEnabled and cfg.autoInvite.enabled then
         frame:RegisterEvent("CHAT_MSG_WHISPER")
     end
-    if cfg.autoInvite.autoAcceptTrusted then
+    if automationEnabled and cfg.autoInvite.autoAcceptTrusted then
         frame:RegisterEvent("PARTY_INVITE_REQUEST")
     end
     if self._raidInviteQueueState then
         frame:RegisterEvent("GROUP_ROSTER_UPDATE")
         frame:RegisterEvent("PARTY_LEADER_CHANGED")
     end
-    if cfg.autoPromote.enabled then
+    if automationEnabled and cfg.autoPromote.enabled then
         frame:RegisterEvent("GROUP_ROSTER_UPDATE")
         frame:RegisterEvent("PARTY_LEADER_CHANGED")
         frame:RegisterEvent("GUILD_ROSTER_UPDATE")
     end
-    if cfg.loot.enabled then
+    if automationEnabled and cfg.loot.enabled then
         frame:RegisterEvent("GROUP_ROSTER_UPDATE")
         frame:RegisterEvent("PARTY_LEADER_CHANGED")
         frame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -1423,7 +1903,7 @@ function PRT:UpdateInviteToolsListeners()
         frame:RegisterEvent("ZONE_CHANGED")
         frame:RegisterEvent("ZONE_CHANGED_INDOORS")
     end
-    if cfg.lootToChat and cfg.lootToChat.enabled then
+    if automationEnabled and cfg.lootToChat and cfg.lootToChat.enabled then
         frame:RegisterEvent("LOOT_OPENED")
     end
     if self._inviteToolsReinviteState then
@@ -1469,10 +1949,10 @@ function PRT:InitInviteTools()
             local inviterGuid = select(7, ...)
             PRT:HandleTrustedInviteRequest(inviterName, inviterGuid)
         elseif event == "GROUP_ROSTER_UPDATE" or event == "PARTY_LEADER_CHANGED" then
-            if GetConfig().autoPromote.enabled then PRT:RequestAutoPromote() end
+            if GetConfig().enabled and GetConfig().autoPromote.enabled then PRT:RequestAutoPromote() end
             if PRT._raidInviteQueueState then PRT:ProcessRaidInviteQueue() end
             if PRT._inviteToolsReinviteState then PRT:ProcessSnapshotReinvite() end
-            if GetConfig().loot.enabled then
+            if GetConfig().enabled and GetConfig().loot.enabled then
                 C_Timer.After(0.2, function() PRT:CheckInviteLootPrompt(false) end)
             end
         elseif event == "GUILD_ROSTER_UPDATE" then
@@ -1486,6 +1966,6 @@ function PRT:InitInviteTools()
     self._inviteToolsFrame = frame
     self:UpdateInviteToolsListeners()
 
-    if GetConfig().autoPromote.enabled then self:RequestAutoPromote() end
-    if GetConfig().loot.enabled then self:ResetInviteLootPromptState() end
+    if GetConfig().enabled and GetConfig().autoPromote.enabled then self:RequestAutoPromote() end
+    if GetConfig().enabled and GetConfig().loot.enabled then self:ResetInviteLootPromptState() end
 end

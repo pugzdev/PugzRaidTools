@@ -493,6 +493,8 @@ function PRT:BuildTargetMarksTab()
         PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3])
     colDelete:SetPoint("LEFT", COL_DELETE, 0)
 
+    editor.btnAddEntryTop = W.CreateButton(editor, "+ Add NPC", 90, 20)
+    editor.btnAddEntryTop:SetPoint("TOPRIGHT", -8, -8)
     editor.btnAddEntry = W.CreateButton(editor, "+ Add NPC", 90, 20)
 
     local markPicker = CreateFrame("Frame", nil, UIParent)
@@ -849,7 +851,7 @@ function PRT:BuildTargetMarksTab()
         return row
     end
 
-    editor.btnAddEntry:SetScript("OnClick", function()
+    local function AddEntry(scrollToNewEntry)
         local group = GetCurrentGroup()
         if not group then
             PRT.Print("Create a grouping first.")
@@ -858,6 +860,20 @@ function PRT:BuildTargetMarksTab()
         group.entries[#group.entries + 1] = NewBlankEntry()
         PRT:InvalidateTargetMarksCache()
         panel:RefreshGroupEditor()
+        if scrollToNewEntry then
+            C_Timer.After(0, function()
+                if not panel:IsShown() then return end
+                scroll:ScrollToBottom()
+                panel:RefreshVisibleTargetMarkRows()
+            end)
+        end
+    end
+
+    editor.btnAddEntryTop:SetScript("OnClick", function()
+        AddEntry(true)
+    end)
+    editor.btnAddEntry:SetScript("OnClick", function()
+        AddEntry(false)
     end)
 
     -----------------------------------------------------------------------

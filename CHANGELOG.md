@@ -1,5 +1,108 @@
 # Changelog
 
+## 1.3.0 - 2026-07-28
+
+### New Major Features
+
+- **Raid Check** — Inspect ready-check responses, World Buffs, food, flasks, Zanza effects, consumes, protection potions, class buffs, durability, and warning effects in a compact configurable raid window opened with `/prt check` or `/rt check`.
+- **Raid Check chat reports** — Send preparation commands such as `!flask`, `!worldbuffs`, or `!durability` in raid, party, or instance chat and receive concise live group results, with long responses safely divided across multiple messages.
+- **Invite & Loot Tools presets** — Save invitation, promotion, raid-management, loot, zone, and announcement settings as named presets that can be created, switched, imported, exported, and included in an overall PRT Profile.
+- **Faster profile switching** — Switch overall PRT Profiles from a movable Profile Float or an embedded Floating Group List selector, with configurable appearance, notifications, locking, and mouse-over behaviour.
+- **Expanded floating-interface customization** — Configure exact dimensions, scale, row height, fonts, opacity, text handling, selector placement, and mouse-over visibility for the Floating Group List and Profile Float.
+
+### Added
+
+- Added a dedicated **Raid Check** configuration tab with quick checks, local output, and raid or party chat reports.
+- Added a sleek, compact live Raid Check window with class-coloured rows, a ready-check progress-bar header, and expanded or collapsed roster views.
+- Added `/prt check` and `/rt check` to toggle the Raid Check window while preserving unrelated `/rt` subcommands.
+- Added a 40-player Classic roster test preview, 35-second ready-check timing, a five-second completion hold, and a smooth two-second fade.
+- Added ordered World Buffs, Zanza, Consumes, Potions, and Disallowed aura categories, including configured item-icon overrides and Supercharged Chronoboon detection.
+- Added class-specific world-buff validity settings with per-class defaults and one-click restoration.
+- Added per-column visibility, aura-count display, multi-icon limits, left/centre/right alignment, World Buff handling for uncounted auras, detected-only warning visibility, and configurable ordering with Player fixed first.
+- Added red icon glows for low-rank class buffs and all detected Disallowed effects.
+- Added Blessing of Salvation and Blessing of Light columns with normalized greater-blessing icons, including low-rank Blessing of Light warnings.
+- Added an option to show the five Paladin Blessing columns only when the local player is Alliance.
+- Added optional automatic display during ready checks, with leader/assistant restriction, configurable tracked columns, player sorting, window scale, frame strata defaulting to Fullscreen Dialog, and delayed closing.
+- Added an enabled-by-default option to dismiss the Raid Check by right-clicking anywhere in its window.
+- Added lightweight durability sharing between group members running PRT; players without a recent response remain clearly marked as unknown.
+- Added self-issued Raid Check commands for raid, party, and instance chat covering flasks, World Buff duration groups, active Chronoboon counts, max-rank raid buffs, durability thresholds, Juju Chill, and protection potions.
+- Added `/prt commands` plus a Raid Check configuration tooltip for discovering chat-command aliases without expanding the general `/prt help` output.
+- Added safe multi-line command responses prefixed with `PRT: ` and constrained to WoW's 255-byte chat-message limit.
+- Added named **Invite & Loot Tools** presets with create, rename, delete, import, and export controls.
+- Added an Invite & Loot automation master switch while preserving each preset's individual settings.
+- Added Invite & Loot Tools preset selection and enable defaults to overall PRT Profiles and full-profile imports/exports.
+- Added a movable **Profile Float** for quickly switching overall PRT Profiles, with show, mouse-over-only, and lock settings.
+- Added exact pixel width and height controls, font sizing, background opacity, and configurable long-text handling to the Profile Float.
+- Added optional profile-change notifications with sound, test controls, and independently configurable screen position.
+- Added configurable expand, truncate, and shrink-to-fit behavior for long composition names in the Floating Group List.
+- Added an option to place the active PRT Profile selector inside the Floating Group List, where it inherits the list's appearance, position, visibility, and lock settings.
+- Added exact width, row-height, font-size, scale, and background-opacity controls plus a mouse-over-only mode to the Floating Group List.
+- Added a test button for the configured Group Swap notification.
+- Added top or bottom placement, left/center/right text alignment, and an optional background highlight for the embedded Profile selector.
+- Added a General Settings toggle for showing or hiding the minimap icon.
+- Added `/prt debugui on`, `/prt debugui`, and `/prt debugui off` commands for recording and reporting main-window resize state.
+- Added a second **+ Add NPC** button at the top of Target Marks groupings; it adds a row and moves the editor to the new entry.
+- Added Ashenvale, The Hinterlands, Duskwood, and Feralas to the built-in loot-prompt zone list.
+- Added custom loot-prompt zones, including buttons to enter a zone name or capture the player's current zone.
+
+### Changed
+
+- The Flask check now accepts only Flask of the Titans, Flask of Distilled Wisdom, Flask of Supreme Power, and Flask of Chromatic Resistance.
+- Persistent elixir and consumable effects now appear under Consumes, while protection potion effects and Frozen Rune appear under Potions. Flask of Petrification is tracked separately and does not satisfy the live Flask check.
+- The ready-check header now uses a smooth teal progress bar with a fading edge and a more descriptive Ready, Not Ready, and Awaiting Response summary.
+- Live and preview title bars now begin with `PRT Raid Check`.
+- Raid Check player rows now use class-colour gradients, outlined names, a narrower Player area, tighter class-buff columns, and a GotW column label.
+- Collapsed Raid Check names now use their player class colours.
+- Aura icons now fill the result-row height without inset spacing, while header icons, header text, and cell contents follow each column's configured alignment.
+- Column-header text now uses physical left, centre, or right edge anchoring so every category visibly follows its configured alignment on Classic clients.
+- Aura counts now remain immediately to the right of the final displayed icon instead of following the column alignment.
+- Uncounted World Buffs can now be shown normally, faded, or hidden without changing the detected or valid totals; this control now lives beside the World Buff Validity settings.
+- Column Order configuration now fits each category and all of its applicable controls on one row.
+- Both Might of Stormwind aura IDs are now valid by default for every class.
+- The former AP column is now DF BS, is described as Diamond Flask Battle Shout, and detects only aura `25101`.
+- Test previews now randomize detected preparation auras while guaranteeing examples that reach the configured World Buff, Consumes, and Potions icon limits and retaining uncommon warning states.
+- Test-preview World Buffs now follow realistic exclusivity rules: one Sayge fortune per player, Warchief's Blessing or Might of Stormwind but never both, and either active World Buffs or Chronoboon but never both.
+- The warning column is now labelled Logs!, obtains its icon directly from Traces of Silithyst, and also detects AV Fire Shield and Soul Revival.
+- Zanza no longer displays a redundant aura count.
+- World Buff and Chronoboon row icons now resolve directly from their spell IDs.
+- World Buff display priority now places counted Sayge fortunes first, followed by Dragonslayer, Zandalar, Warchief's Blessing, Might of Stormwind, Songflower, Fengus, Mol'dar, and Slip'kik; counted buffs always occupy available icon slots before shown or faded uncounted buffs.
+- World Buff columns can now display up to seven selected icons with only a compact 15-pixel trailing allowance for their count and margin.
+- Friendship Gift effects and normal Consumes now resolve row icons from their exact aura spell IDs while retaining configured item-icon exceptions.
+- Bogling Root now displays the texture from item `5206` instead of aura `5665`.
+- The Raid Check chat-command tooltip is wider, keeps each command description on one line, and colours command syntax for faster scanning.
+- Player-buff rows and test previews now use the exact detected aura's spell icon, allowing single-target and group variants to remain visually distinct; configured Salvation and Light overrides are preserved.
+- Durability values below 25% now use red text.
+- Single-icon aura columns now use the same spacing as class-buff columns; each additional configured icon adds one icon width.
+- Class sorting now follows Warrior, Rogue, Hunter, Mage, Warlock, Druid, Paladin, Priest, and Shaman priority, with separate then-name and then-group modes.
+- New Raid Check settings now default to scale 1.00, class-then-group sorting, automatic leader/assistant ready-check display, a five-second completion hold and fade, an expanded ready-status view, and fading uncounted World Buffs. The default column order, visibility, alignment, counts, and icon limits now match the supplied compact raid layout.
+- Loot method, master-looter assignment, and loot threshold changes are now evaluated and applied independently.
+- The loot confirmation prompt now identifies the current master looter when the configured setting is **Keep current**.
+- Raid-entry status notifications now include the active overall PRT Profile without producing a second competing notification.
+- The entire Profiles tab is now scrollable, and standalone Profile Float appearance controls are disabled while its selector is embedded in the Floating Group List.
+- Reduced the minimum width and height available to both floating interfaces.
+- Invite & Loot preset exports include invite keywords, queued raid-invite settings, promotion rules, loot settings, built-in and custom zones, and Loot to Chat settings. The realm-aware invite block list remains global.
+- Floating Group List composition rows now use the same smooth hover feedback as other PRT selection lists.
+- The embedded Profile selector now uses aligned white text and a dropdown indicator, making it distinct from raid compositions.
+- The embedded Profile dropdown now inherits the Floating Group List's effective scale, width, row height, font size, outline, and text handling.
+
+### Fixed
+
+- Applying configured Master Loot no longer fails when automatic master-looter assignment is disabled and no master looter is currently active; the game now chooses its normal default.
+- Applying an already-active Master Loot configuration no longer reapplies the loot method and accidentally replaces the current master looter.
+- Unchanged loot methods and thresholds no longer generate unnecessary API calls.
+- Fixed a Profile Float initialization error when updating its active-profile label.
+- Floating Group List composition tooltips now avoid covering the list and choose a screen-aware side that keeps them visible near screen edges and corners.
+- Removed the ineffective text-wrapping choice from both floating interfaces and migrated saved uses of it to truncation.
+- Fixed the main configuration resize grip fighting the frame-size clamp during slower drags.
+- Corrected vertical text alignment throughout both floating interfaces and their profile menus.
+- Fixed embedded Profile dropdowns opening away from the Floating Group List's outer edge or overlapping it by the selector row's inner padding.
+- Fixed the minimap visibility setting leaving a non-interactive slot visible when HidingBar controlled the button frame.
+- Fixed main-window resizing collapsing the sidebar, content area, and tab panels to zero dimensions.
+- Reduced live-resize flashing by preserving established anchors, skipping unchanged physical-pixel sizes, and resizing only the visible tab panel during the drag.
+- Fixed fractional UI scaling causing recursive one- or two-pixel resize corrections and unstable layouts at particular window sizes.
+- Fixed the resize grip disappearing or becoming unusable after completing a drag.
+- Fixed Raid Check class-colour gradients and gradient timer tails not rendering because their textures lacked an initialized colour surface.
+
 ## 1.2.1 - 2026-07-27
 
 ### Added

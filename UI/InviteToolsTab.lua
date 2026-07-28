@@ -104,6 +104,132 @@ function PRT:BuildInviteToolsTab()
         })
 
     -----------------------------------------------------------------------
+    -- Invite & Loot presets
+    -----------------------------------------------------------------------
+    local presetHeader = W.CreateHeader(content, "Invite & Loot Preset")
+    local automationEnabled = W.CreateCheckbox(content, "Enable Invite & Loot automation", function(checked)
+        local cfg = PRT:GetDB().inviteTools
+        cfg.enabled = checked and true or false
+        PRT:UpdateInviteToolsListeners()
+        if cfg.enabled and cfg.autoPromote.enabled then PRT:RequestAutoPromote() end
+        if cfg.enabled and cfg.loot.enabled then PRT:ResetInviteLootPromptState() end
+    end)
+    automationEnabled:SetWidth(310)
+    W.AttachTooltip(automationEnabled.check, {
+        anchor = "ANCHOR_TOP",
+        lines = {
+            { "Master switch for automatic Invite & Loot actions.", 1, 1, 1, true },
+            { "Your individual settings stay stored in the active preset.", 0.72, 0.72, 0.72, true },
+        },
+    })
+
+    local presetLabel = W.CreateLabel(content, "Active Preset:",
+        PRT.FONT_SIZE, 0.82, 0.82, 0.82)
+    local presetDropdown = W.CreateDropdown(content, 250, {}, function(value)
+        if PRT:ActivateInviteToolsPreset(value) then
+            PRT:UpdateActivePRTProfileSelection("inviteTools", value, false)
+        end
+    end)
+    local presetNew = W.CreateButton(content, "+ New", 72, 22)
+    local presetRename = W.CreateButton(content, "Rename", 72, 22)
+    local presetDelete = W.CreateButton(content, "Delete", 72, 22)
+    local presetImport = W.CreateButton(content, "Import", 72, 22)
+    local presetExport = W.CreateButton(content, "Export", 72, 22)
+
+    local presetNamePopup = W.CreateNamePopup("PRTInviteToolsPresetNamePopup", {
+        title = "Invite & Loot Preset",
+        prompt = "Preset name:",
+        acceptText = "Save",
+    })
+    local presetDeletePopup = W.CreateConfirmPopup("PRTInviteToolsPresetDeletePopup", {
+        title = "Delete Invite & Loot Preset",
+        confirmText = "Delete",
+        confirmTextColor = { 1, 0.25, 0.25 },
+    })
+    local presetImportPopup = W.CreateTextTransferPopup("PRTInviteToolsPresetImportPopup", {
+        title = "Import Invite & Loot Preset",
+        instruction = "Paste an Invite & Loot preset export below.",
+        actionText = "Import",
+        showCancel = true,
+    })
+    local presetExportPopup = W.CreateTextTransferPopup("PRTInviteToolsPresetExportPopup", {
+        title = "Export Invite & Loot Preset",
+        instruction = "Copy this text to share the active Invite & Loot preset.",
+        actionText = "Close",
+    })
+
+    presetNew:SetScript("OnClick", function()
+        presetNamePopup:Open({
+            title = "New Invite & Loot Preset",
+            acceptText = "Create",
+            onAccept = function(text)
+                local preset, err = PRT:CreateInviteToolsPreset(text)
+                if not preset then PRT.Print(err); return false end
+                PRT:ActivateInviteToolsPreset(preset.name)
+                PRT:UpdateActivePRTProfileSelection("inviteTools", preset.name, false)
+                return true
+            end,
+        })
+    end)
+
+    presetRename:SetScript("OnClick", function()
+        local store = PRT:GetDB().inviteTools
+        local oldName = store.activePreset
+        presetNamePopup:Open({
+            title = "Rename Invite & Loot Preset",
+            text = oldName,
+            highlight = true,
+            acceptText = "Rename",
+            onAccept = function(text)
+                local ok, err = PRT:RenameInviteToolsPreset(oldName, text)
+                if not ok then PRT.Print(err); return false end
+                panel:Refresh()
+                return true
+            end,
+        })
+    end)
+
+    presetDelete:SetScript("OnClick", function()
+        local store = PRT:GetDB().inviteTools
+        local name = store.activePreset
+        if #store.presets <= 1 then
+            PRT.Print("At least one Invite & Loot preset must remain.")
+            return
+        end
+        presetDeletePopup:Open({
+            message = 'Delete the Invite & Loot preset "' .. name .. '"?',
+            onConfirm = function()
+                local ok, err = PRT:DeleteInviteToolsPreset(name)
+                if not ok then PRT.Print(err); return false end
+                return true
+            end,
+        })
+    end)
+
+    presetImport:SetScript("OnClick", function()
+        presetImportPopup:Open({
+            text = "",
+            onAction = function(text)
+                local preset, err = PRT:ImportInviteToolsPreset(text)
+                if not preset then PRT.Print(err); return false end
+                PRT:UpdateActivePRTProfileSelection("inviteTools", preset.name, false)
+                PRT.Print('Imported Invite & Loot preset "' .. preset.name .. '".')
+                return true
+            end,
+        })
+    end)
+
+    presetExport:SetScript("OnClick", function()
+        local preset = PRT:GetActiveInviteToolsPreset()
+        if not preset then return end
+        presetExportPopup:Open({
+            text = PRT:ExportInviteToolsPreset(preset),
+            highlight = true,
+            onAction = function() return true end,
+        })
+    end)
+
+    -----------------------------------------------------------------------
     -- Auto invite
     -----------------------------------------------------------------------
     local inviteHeader = W.CreateHeader(content, "Auto Invite Keywords")
@@ -253,7 +379,7 @@ function PRT:BuildInviteToolsTab()
         anchor = "ANCHOR_TOP",
         lines = {
             { "When disabled, applying Master Loot keeps the current master looter unchanged.", 1, 1, 1, true },
-            { "PRT will not enable Master Loot from another loot method unless an assignee is configured.", 0.72, 0.72, 0.72, true },
+            { "If Master Loot is not active, PRT enables it and lets the game choose its default master looter.", 0.72, 0.72, 0.72, true },
         },
     })
 
@@ -287,6 +413,40 @@ function PRT:BuildInviteToolsTab()
         checkbox:SetWidth(250)
         zoneChecks[zoneInfo.key] = checkbox
     end
+
+    local customZonesLabel = W.CreateLabel(content, "Custom zones:",
+        PRT.FONT_SIZE, 0.82, 0.82, 0.82)
+    local customZoneEdit = W.CreateEditBox(content, 250, 22, "Zone name")
+    local addCustomZoneButton = W.CreateButton(content, "Add", 58, 22)
+    local addCurrentZoneButton = W.CreateButton(content, "+ Current Zone", 112, 22)
+    local customZoneFeedback = W.CreateLabel(content, "", PRT.FONT_SIZE - 1,
+        PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3])
+    local customZoneRows = {}
+    local noCustomZonesLabel = W.CreateLabel(content, "No custom zones configured.",
+        PRT.FONT_SIZE, PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3])
+
+    local function AddNamedCustomZone()
+        local ok, message = PRT:AddInviteLootCustomZone(customZoneEdit:GetText())
+        if ok then
+            customZoneEdit:SetText("")
+            customZoneFeedback:SetText("")
+        else
+            customZoneFeedback:SetText(message or "Unable to add that zone.")
+        end
+    end
+    addCustomZoneButton:SetScript("OnClick", AddNamedCustomZone)
+    customZoneEdit:SetScript("OnEnterPressed", function(self)
+        AddNamedCustomZone()
+        self:ClearFocus()
+    end)
+    addCurrentZoneButton:SetScript("OnClick", function()
+        local ok, message = PRT:AddCurrentInviteLootCustomZone()
+        if ok then
+            customZoneFeedback:SetText("")
+        else
+            customZoneFeedback:SetText(message or "Unable to add the current zone.")
+        end
+    end)
 
     -----------------------------------------------------------------------
     -- Loot to Chat
@@ -356,6 +516,25 @@ function PRT:BuildInviteToolsTab()
         y = y - 25
         SetTopFill(intro, content, 2, y)
         y = y - 40
+
+        SetTopLeft(presetHeader, 2, y)
+        y = y - 28
+        SetTopLeft(automationEnabled, 2, y)
+        y = y - 31
+        SetTopLeft(presetLabel, 2, y)
+        y = y - 19
+        SetTopLeft(presetDropdown, 2, y)
+        presetNew:ClearAllPoints()
+        presetNew:SetPoint("LEFT", presetDropdown, "RIGHT", 6, 0)
+        presetRename:ClearAllPoints()
+        presetRename:SetPoint("LEFT", presetNew, "RIGHT", 6, 0)
+        presetDelete:ClearAllPoints()
+        presetDelete:SetPoint("LEFT", presetRename, "RIGHT", 6, 0)
+        presetImport:ClearAllPoints()
+        presetImport:SetPoint("LEFT", presetDelete, "RIGHT", 22, 0)
+        presetExport:ClearAllPoints()
+        presetExport:SetPoint("LEFT", presetImport, "RIGHT", 6, 0)
+        y = y - 46
 
         SetTopLeft(inviteHeader, 2, y)
         y = y - 24
@@ -428,7 +607,7 @@ function PRT:BuildInviteToolsTab()
         return y - 10
     end
 
-    local function LayoutRemaining(y)
+    local function LayoutRemaining(y, cfg)
         -- Raid disband and reinvites sits directly below Auto Invite.
         y = y - 10
         SetTopLeft(raidHeader, 2, y)
@@ -487,7 +666,57 @@ function PRT:BuildInviteToolsTab()
             local row = math.floor((index - 1) / 2)
             SetTopLeft(zoneChecks[zone.key], 2 + column * 250, y - row * 24)
         end
-        y = y - math.ceil(#PRT.INVITE_LOOT_ZONES / 2) * 24 - 24
+        y = y - math.ceil(#PRT.INVITE_LOOT_ZONES / 2) * 24 - 10
+
+        SetTopLeft(customZonesLabel, 2, y)
+        y = y - 20
+        SetTopLeft(customZoneEdit, 2, y)
+        addCustomZoneButton:ClearAllPoints()
+        addCustomZoneButton:SetPoint("LEFT", customZoneEdit, "RIGHT", 6, 0)
+        addCurrentZoneButton:ClearAllPoints()
+        addCurrentZoneButton:SetPoint("LEFT", addCustomZoneButton, "RIGHT", 6, 0)
+        customZoneFeedback:ClearAllPoints()
+        customZoneFeedback:SetPoint("LEFT", addCurrentZoneButton, "RIGHT", 8, 0)
+        y = y - 29
+
+        for _, row in ipairs(customZoneRows) do row:Hide() end
+        local customZones = cfg.loot.customZones or {}
+        if #customZones == 0 then
+            SetTopLeft(noCustomZonesLabel, 8, y)
+            noCustomZonesLabel:Show()
+            y = y - 25
+        else
+            noCustomZonesLabel:Hide()
+            for index, zone in ipairs(customZones) do
+                local row = customZoneRows[index]
+                if not row then
+                    row = W.CreateRowFrame(content, 24)
+                    W.AddBackground(row, 0.04, 0.04, 0.04, 0.55)
+                    row.zoneLabel = W.CreateLabel(row, "", PRT.FONT_SIZE, 1, 1, 1)
+                    row.zoneLabel:SetPoint("LEFT", 8, 0)
+                    row.removeButton = W.CreateDeleteButton(row, function()
+                        if row.customZoneIndex then
+                            PRT:RemoveInviteLootCustomZone(row.customZoneIndex)
+                        end
+                    end, {
+                        text = "Remove",
+                        width = 66,
+                        height = 20,
+                    })
+                    row.removeButton:SetPoint("RIGHT", -3, 0)
+                    customZoneRows[index] = row
+                end
+                local mapText = zone.uiMapId and (" (map " .. zone.uiMapId .. ")") or ""
+                row.customZoneIndex = index
+                row.zoneLabel:SetText(zone.name .. mapText)
+                row:ClearAllPoints()
+                row:SetPoint("TOPLEFT", 2, y)
+                row:SetPoint("TOPRIGHT", content, "TOPLEFT", 470, y)
+                row:Show()
+                y = y - 25
+            end
+        end
+        y = y - 18
 
         SetTopLeft(lootChatHeader, 2, y)
         y = y - 24
@@ -502,7 +731,15 @@ function PRT:BuildInviteToolsTab()
     end
 
     function panel:Refresh()
+        PRT:EnsureInviteToolsPresetDefaults()
         local cfg = PRT:GetDB().inviteTools
+        local presetItems = {}
+        for _, preset in ipairs(cfg.presets or {}) do
+            presetItems[#presetItems + 1] = { text = preset.name, value = preset.name }
+        end
+        presetDropdown:SetItems(presetItems)
+        presetDropdown:SetSelected(cfg.activePreset)
+        automationEnabled:SetChecked(cfg.enabled ~= false)
         inviteEnabled:SetChecked(cfg.autoInvite.enabled)
         guildOnly:SetChecked(cfg.autoInvite.guildOnly)
         autoAcceptTrusted:SetChecked(cfg.autoInvite.autoAcceptTrusted)
@@ -544,7 +781,7 @@ function PRT:BuildInviteToolsTab()
         end
 
         local y = LayoutAndRefreshKeywords(cfg.autoInvite)
-        LayoutRemaining(y)
+        LayoutRemaining(y, cfg)
     end
 
     function panel:OnShow()

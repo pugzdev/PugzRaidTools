@@ -9,6 +9,28 @@ local W = PRT.UI
 
 local LINE_H = 20
 local PAD    = 4
+local MIN_WIDTH = 70
+local MIN_ROW_HEIGHT = 14
+
+local function IsMouseOverFrame(frame)
+    if not frame or not frame:IsShown() then return false end
+    if MouseIsOver then return MouseIsOver(frame) end
+    if frame.IsMouseOver then return frame:IsMouseOver() end
+    return false
+end
+
+local function FadeListTo(frame, alpha)
+    if UIFrameFade then
+        UIFrameFade(frame, {
+            mode = alpha > frame:GetAlpha() and "IN" or "OUT",
+            timeToFade = 0.15,
+            startAlpha = frame:GetAlpha(),
+            endAlpha = alpha,
+        })
+    else
+        frame:SetAlpha(alpha)
+    end
+end
 
 -- Toggle-button colour states (green = on, red = off)
 local COL_ON      = { 0.10, 0.45, 0.10, 0.92 }
@@ -26,6 +48,76 @@ local function AddSortInstructions()
     GameTooltip:AddLine(
         "|cff73cfffShift + Left Click|r - Exact position sort.",
         1, 1, 1)
+end
+
+local function PositionTooltipOutsideList()
+    local frame = PRT.floatingFrame
+    if not frame or not frame:IsShown() then return end
+
+    local left, right = frame:GetLeft(), frame:GetRight()
+    local top, bottom = frame:GetTop(), frame:GetBottom()
+    if not left or not right or not top or not bottom then return end
+
+    local screenWidth = UIParent:GetWidth()
+    local screenHeight = UIParent:GetHeight()
+    local tooltipWidth = GameTooltip:GetWidth()
+    local tooltipHeight = GameTooltip:GetHeight()
+    local gap = 8
+    local spaces = {
+        right = screenWidth - right,
+        left = left,
+        top = screenHeight - top,
+        bottom = bottom,
+    }
+
+    local side
+    if spaces.right >= tooltipWidth + gap or spaces.left >= tooltipWidth + gap then
+        side = spaces.right >= tooltipWidth + gap
+            and (spaces.left < tooltipWidth + gap or spaces.right >= spaces.left)
+            and "right" or "left"
+    elseif spaces.top >= tooltipHeight + gap or spaces.bottom >= tooltipHeight + gap then
+        side = spaces.top >= tooltipHeight + gap
+            and (spaces.bottom < tooltipHeight + gap or spaces.top >= spaces.bottom)
+            and "top" or "bottom"
+    else
+        local horizontalFit = math.max(spaces.right, spaces.left) / math.max(1, tooltipWidth)
+        local verticalFit = math.max(spaces.top, spaces.bottom) / math.max(1, tooltipHeight)
+        if horizontalFit >= verticalFit then
+            side = spaces.right >= spaces.left and "right" or "left"
+        else
+            side = spaces.top >= spaces.bottom and "top" or "bottom"
+        end
+    end
+
+    GameTooltip:ClearAllPoints()
+    if side == "right" or side == "left" then
+        local tooltipPoint = side == "right" and "TOPLEFT" or "TOPRIGHT"
+        local framePoint = side == "right" and "TOPRIGHT" or "TOPLEFT"
+        local x = side == "right" and gap or -gap
+        if top >= tooltipHeight + gap then
+            GameTooltip:SetPoint(tooltipPoint, frame, framePoint, x, 0)
+        else
+            tooltipPoint = side == "right" and "BOTTOMLEFT" or "BOTTOMRIGHT"
+            framePoint = side == "right" and "BOTTOMRIGHT" or "BOTTOMLEFT"
+            GameTooltip:SetPoint(tooltipPoint, frame, framePoint, x, 0)
+        end
+    else
+        local tooltipPoint = side == "top" and "BOTTOMLEFT" or "TOPLEFT"
+        local framePoint = side == "top" and "TOPLEFT" or "BOTTOMLEFT"
+        local y = side == "top" and gap or -gap
+        if screenWidth - left >= tooltipWidth + gap then
+            GameTooltip:SetPoint(tooltipPoint, frame, framePoint, 0, y)
+        else
+            tooltipPoint = side == "top" and "BOTTOMRIGHT" or "TOPRIGHT"
+            framePoint = side == "top" and "TOPRIGHT" or "BOTTOMRIGHT"
+            GameTooltip:SetPoint(tooltipPoint, frame, framePoint, 0, y)
+        end
+    end
+end
+
+local function ShowPositionedTooltip()
+    GameTooltip:Show()
+    PositionTooltipOutsideList()
 end
 
 local function ShowCompTooltip(btn, compName)
@@ -62,14 +154,14 @@ local function ShowCompTooltip(btn, compName)
         return a.name < b.name
     end)
 
-    GameTooltip:SetOwner(btn, "ANCHOR_LEFT")
+    GameTooltip:SetOwner(btn, "ANCHOR_NONE")
     GameTooltip:ClearLines()
 
     if #missing == 0 and #extra == 0 then
         GameTooltip:AddLine(compName, 1, 1, 1)
         GameTooltip:AddLine("All roster members present.", 0.6, 1, 0.6)
         AddSortInstructions()
-        GameTooltip:Show()
+        ShowPositionedTooltip()
         return
     end
 
@@ -91,7 +183,7 @@ local function ShowCompTooltip(btn, compName)
         GameTooltip:AddDoubleLine("...", "...", 0.5, 0.5, 0.5, 0.5, 0.5, 0.5)
     end
     AddSortInstructions()
-    GameTooltip:Show()
+    ShowPositionedTooltip()
 end
 
 ---------------------------------------------------------------------------
@@ -220,6 +312,32 @@ function PRT:InitFloatingList()
         db.floatingList.x        = x
         db.floatingList.y        = y
     end)
+    f:SetScript("OnUpdate", function(self, elapsed)
+        self._mouseoverElapsed = (self._mouseoverElapsed or 0) + elapsed
+        if self._mouseoverElapsed < 0.05 then return end
+        self._mouseoverElapsed = 0
+
+        local cfg = PRT:GetDB().floatingList
+        if not cfg.mouseoverOnly then return end
+        local isOver = IsMouseOverFrame(self)
+            or IsMouseOverFrame(self.profileMenu)
+        if isOver then
+            self._mouseoverLeaveAt = nil
+            if not self._mouseoverActive then
+                self._mouseoverActive = true
+                FadeListTo(self, 1)
+            end
+        elseif self._mouseoverActive then
+            self._mouseoverLeaveAt = self._mouseoverLeaveAt
+                or (GetTime() + 0.12)
+            if GetTime() >= self._mouseoverLeaveAt then
+                self._mouseoverLeaveAt = nil
+                self._mouseoverActive = false
+                if self.profileMenu then self.profileMenu:Hide() end
+                FadeListTo(self, 0)
+            end
+        end
+    end)
 
     f.buttons = {}
 
@@ -282,26 +400,50 @@ function PRT:RefreshFloatingList()
 
     local fontSize = fl.fontSize or 14
     local outline  = fl.fontOutline or "OUTLINE"
+    local textMode = fl.textMode or "expand"
+    if textMode == "wrap" then
+        textMode = "truncate"
+        fl.textMode = textMode
+    end
+    local textWidth = math.max(MIN_WIDTH,
+        math.min(700, tonumber(fl.width) or tonumber(fl.textWidth) or 180))
+    local rowHeight = math.max(MIN_ROW_HEIGHT,
+        math.min(90, tonumber(fl.rowHeight) or LINE_H))
+    local profileEmbedded = db.profileFloat
+        and db.profileFloat.embedInGroupList and f.profileButton
+    local profilePosition = db.profileFloat
+        and db.profileFloat.embeddedPosition == "bottom" and "bottom" or "top"
+    local profileAtTop = profileEmbedded and profilePosition == "top"
+    local profileAtBottom = profileEmbedded and profilePosition == "bottom"
+    local topProfileRows = profileAtTop and 1 or 0
+    local bottomProfileRows = profileAtBottom and 1 or 0
     local fcr, fcg, fcb = PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3]
     if fl.fontColor then fcr, fcg, fcb = fl.fontColor[1], fl.fontColor[2], fl.fontColor[3] end
     local maxW = 60
 
+    fl.width = textWidth
+    fl.textWidth = textWidth
+    fl.rowHeight = rowHeight
+
     for i, compName in ipairs(order) do
         local btn = f.buttons[i]
         if not btn then
-            btn = W.CreateRowButton(f, LINE_H, {
-                bgColor = { 0, 0, 0, 0 },
-                fontSize = fontSize,
+            btn = W.CreateSelectableButton(f, "", {
+                width = 60,
+                height = LINE_H,
+                labelPoint = { "LEFT", 6, 0 },
                 justifyH = "LEFT",
+                bgColor = { 0, 0, 0, 0 },
+                borderColor = { 0, 0, 0, 0 },
                 textColor = { fcr, fcg, fcb, 1 },
+                hoverAnimation = "MRT",
+                hoverAnimationHeight = LINE_H,
             })
 
-            btn:SetScript("OnEnter", function(self)
-                self._bgTex:SetColorTexture(PRT.C.SIDEBAR_SEL[1], PRT.C.SIDEBAR_SEL[2], PRT.C.SIDEBAR_SEL[3], 0.5)
+            btn:HookScript("OnEnter", function(self)
                 ShowCompTooltip(self, self.compName)
             end)
-            btn:SetScript("OnLeave", function(self)
-                self._bgTex:SetColorTexture(0, 0, 0, 0)
+            btn:HookScript("OnLeave", function()
                 GameTooltip:Hide()
             end)
             btn:SetScript("OnClick", function(self, button)
@@ -342,21 +484,61 @@ function PRT:RefreshFloatingList()
         btn.label:SetText(compName)
         btn.label:SetTextColor(fcr, fcg, fcb, 1)
 
-        btn:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, -(PAD + (i - 1) * LINE_H))
-        btn:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
-        btn:Show()
-
         local w = btn.label:GetStringWidth() + 12
         if w > maxW then maxW = w end
+    end
+
+    if profileEmbedded then
+        f.profileButton.label:SetFont(PRT.FONT, fontSize, outline)
+        local activeProfileLabel =
+            "Profile: " .. (db.prtProfiles.activeProfile or "")
+        f.profileButton.label:SetText(activeProfileLabel)
+        maxW = math.max(maxW, f.profileButton.label:GetStringWidth() + 28)
+        for _, profile in ipairs(db.prtProfiles.profiles or {}) do
+            f.profileButton.label:SetText(profile.name or "")
+            maxW = math.max(maxW, f.profileButton.label:GetStringWidth() + 28)
+        end
+        f.profileButton.label:SetText(activeProfileLabel)
+    end
+
+    local frameWidth = textMode == "expand"
+        and math.max(textWidth, maxW + PAD * 2) or textWidth
+    if not profileEmbedded and f.profileButton then
+        f.profileButton:Hide()
+        if f.profileMenu then f.profileMenu:Hide() end
+    end
+
+    for i, compName in ipairs(order) do
+        local btn = f.buttons[i]
+        btn:SetHeight(rowHeight)
+        if btn.SetHoverAnimationHeight then
+            btn:SetHoverAnimationHeight(rowHeight)
+        end
+        btn:ClearAllPoints()
+        btn:SetPoint("TOPLEFT", f, "TOPLEFT", PAD,
+            -(PAD + (topProfileRows + i - 1) * rowHeight))
+        btn:SetPoint("RIGHT", f, "RIGHT", -PAD, 0)
+        W.ApplyTextOverflow(btn.label, compName, {
+            mode = textMode,
+            fontSize = fontSize,
+            minFontSize = 8,
+            width = math.max(1, frameWidth - PAD * 2 - 10),
+            height = rowHeight,
+            outline = outline,
+            setWidth = false,
+        })
+        btn:Show()
     end
 
     ---------------------------------------------------------------------------
     -- Position separator and toggle buttons below the comp list
     -- sepY is the distance from the frame top to the bottom of the last comp.
     ---------------------------------------------------------------------------
-    local sepY   = -(PAD + #order * LINE_H)   -- top of separator from frame top
+    local contentRows = #order + topProfileRows
+    local sepY   = -(PAD + contentRows * rowHeight) -- top of separator from frame top
     local gasY   = sepY - 1                    -- top of GAS button (1 px below sep)
-    local pamY   = gasY - LINE_H               -- top of PAM button
+    local pamY   = gasY - rowHeight            -- top of PAM button
+    local profileBottomY = pamY - rowHeight
 
     f.toggleSep:SetPoint("TOPLEFT",  f, "TOPLEFT",  PAD, sepY)
     f.toggleSep:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, sepY)
@@ -364,15 +546,43 @@ function PRT:RefreshFloatingList()
     f.gasBtn:ClearAllPoints()
     f.gasBtn:SetPoint("TOPLEFT",  f, "TOPLEFT",  PAD, gasY)
     f.gasBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, gasY)
+    f.gasBtn:SetHeight(rowHeight)
 
     f.pamBtn:ClearAllPoints()
     f.pamBtn:SetPoint("TOPLEFT",  f, "TOPLEFT",  PAD, pamY)
     f.pamBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, pamY)
+    f.pamBtn:SetHeight(rowHeight)
+
+    if profileEmbedded then
+        local profileY = profileAtTop and -PAD or profileBottomY
+        f.profileButton:ClearAllPoints()
+        f.profileButton:SetPoint("TOPLEFT", f, "TOPLEFT", PAD, profileY)
+        f.profileButton:SetPoint("TOPRIGHT", f, "TOPRIGHT", -PAD, profileY)
+        f.profileButton:SetHeight(rowHeight)
+    end
+
+    for _, toggle in ipairs({ f.gasBtn, f.pamBtn }) do
+        W.ApplyTextOverflow(toggle.label, toggle == f.gasBtn and "GAS" or "PAM", {
+            mode = textMode,
+            fontSize = fontSize,
+            minFontSize = 6,
+            width = math.max(1, frameWidth - PAD * 2 - 10),
+            height = rowHeight,
+            outline = outline,
+            setWidth = false,
+        })
+    end
 
     -- Resize frame: comp content + 1px separator + 2 toggle buttons + bottom pad
-    local toggleBarH = 1 + LINE_H * 2
-    local totalH     = #order * LINE_H + PAD * 2 + toggleBarH
-    f:SetSize(maxW + PAD * 2, math.max(totalH, LINE_H + toggleBarH))
+    local toggleBarH = 1 + rowHeight * 2
+    local totalH = (#order + topProfileRows + bottomProfileRows) * rowHeight
+        + PAD * 2 + toggleBarH
+    f:SetSize(frameWidth, math.max(totalH, rowHeight + toggleBarH))
+
+    if profileEmbedded and self.RefreshEmbeddedProfileSelector then
+        self:RefreshEmbeddedProfileSelector(
+            frameWidth, rowHeight, fontSize, textMode, outline)
+    end
 end
 
 ---------------------------------------------------------------------------
@@ -390,7 +600,23 @@ function PRT:UpdateFloatingList()
     if fl.hideOutsideRaid and not IsInRaid() then
         shouldShow = false
     end
-    if shouldShow then f:Show() else f:Hide() end
+    if shouldShow then
+        f:Show()
+        if fl.mouseoverOnly then
+            local isOver = IsMouseOverFrame(f)
+                or IsMouseOverFrame(f.profileMenu)
+            f._mouseoverActive = isOver
+            f._mouseoverLeaveAt = nil
+            f:SetAlpha(isOver and 1 or 0)
+        else
+            f._mouseoverActive = nil
+            f._mouseoverLeaveAt = nil
+            f:SetAlpha(1)
+        end
+    else
+        f:Hide()
+        if f.profileMenu then f.profileMenu:Hide() end
+    end
 
     -- position
     f:ClearAllPoints()
@@ -415,6 +641,9 @@ function PRT:UpdateFloatingList()
         for _, b in ipairs(f._borders) do
             b:SetColorTexture(PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3], borderA)
         end
+    end
+    if f.profileMenu and f.profileMenu._bgTex then
+        f.profileMenu._bgTex:SetColorTexture(0.02, 0.02, 0.02, bgA)
     end
 
     -- toggle button colours

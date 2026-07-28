@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.2.1"
+PRT.VERSION = "1.3.0"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -351,6 +351,7 @@ PRT.DEFAULTS = {
     floatingList = {
         locked = false,
         hideOutsideRaid = false,
+        mouseoverOnly = false,
         point = "CENTER",
         relPoint = "CENTER",
         x = 0,
@@ -358,6 +359,10 @@ PRT.DEFAULTS = {
         scale = 1.0,
         fontSize = 14,
         fontOutline = "OUTLINE",
+        textMode = "expand",
+        width = 180,
+        rowHeight = 20,
+        textWidth = 180,
         bgAlpha = 0.7,
         shown = true,
     },
@@ -368,6 +373,7 @@ PRT.DEFAULTS = {
         frameW           = 1000,
         frameH           = 600,
         minimapAngle     = 195,    -- degrees; 195° = bottom-left of minimap
+        showMinimapIcon  = true,
         lastImportShape  = "",     -- last used import shape key ("8col","2col","1col","cooked")
         lastExportShape  = "8col", -- last used single-composition export shape
     },
@@ -399,6 +405,29 @@ PRT.DEFAULTS = {
         activeProfile = "",
         profiles = {},        -- array of overall feature-preset and enabled-default mappings
     },
+    profileFloat = {
+        embedInGroupList = false,
+        embeddedPosition = "top",
+        embeddedHighlight = true,
+        embeddedAlignment = "left",
+        shown = false,
+        mouseoverOnly = false,
+        locked = false,
+        point = "CENTER",
+        relPoint = "CENTER",
+        x = 0,
+        y = 160,
+        scale = 1.0,
+        width = 220,
+        height = 30,
+        fontSize = 12,
+        textMode = "truncate",
+        bgAlpha = 0.92,
+        notificationEnabled = true,
+        notificationSound = true,
+        notificationX = 0,
+        notificationY = 80,
+    },
     rosterMatcher = {
         threshold = 50,
         aliases = {},         -- array of { id, label, characters={ { name, realm, classFile } } }
@@ -407,11 +436,63 @@ PRT.DEFAULTS = {
     autoLog = {
         enabled = false,
     },
+    raidCheck = {
+        showOnReadyCheck = true,
+        onlyLeaderAssist = true,
+        checkWorldBuffs = true,
+        checkFood = false,
+        checkFlask = true,
+        checkZanza = true,
+        checkConsumes = true,
+        checkPotions = true,
+        checkDisallowed = true,
+        checkBuffs = true,
+        checkDurability = true,
+        allianceBlessingsOnly = true,
+        dismissOnRightClick = true,
+        columnSettings = {},
+        worldBuffValidity = {},
+        sortMode = "classGroup",
+        autoClose = true,
+        closeDelay = 5,
+        collapsed = false,
+        columnOrder = {
+            "worldBuffs",
+            "attackPower",
+            "disallowed",
+            "flask",
+            "zanza",
+            "potions",
+            "consumes",
+            "food",
+            "stamina",
+            "druid",
+            "intellect",
+            "spirit",
+            "shadow",
+            "armor",
+            "kings",
+            "might",
+            "wisdom",
+            "salvation",
+            "light",
+            "durability",
+        },
+        scale = 1.0,
+        frameStrata = "FULLSCREEN_DIALOG",
+        point = "CENTER",
+        relPoint = "CENTER",
+        x = 0,
+        y = 0,
+    },
     inviteTools = {
+        enabled = true,
+        activePreset = "",
+        presets = {},
+        bannedPlayers = {},       -- global realm-aware block list; not part of presets
         autoInvite = {
             enabled = false,
             keywords = { "inv" },
-            bannedPlayers = {},  -- realm-aware identity key -> { name, realm }
             guildOnly = false,
             autoAcceptTrusted = false,
             raidInvites = {
@@ -439,7 +520,12 @@ PRT.DEFAULTS = {
                 aq20 = false,
                 blastedLands = false,
                 azshara = false,
+                ashenvale = false,
+                hinterlands = false,
+                duskwood = false,
+                feralas = false,
             },
+            customZones = {},
         },
         lootToChat = {
             enabled = false,
@@ -469,7 +555,7 @@ local function DeepMerge(defaults, saved)
         elseif type(v) == "table" and type(saved[k]) == "table"
                and k ~= "compositions" and k ~= "triggers"
                and k ~= "presets" and k ~= "swapPresets"
-               and k ~= "keywords" then
+               and k ~= "keywords" and k ~= "columnOrder" then
             DeepMerge(v, saved[k])
         end
     end
@@ -1329,8 +1415,12 @@ function PRT:CheckRaidFeatureStatusWarning()
     self._lastRaidFeatureWarningKey = key
 
     local lines = self:GetRaidFeatureStatusLines(instanceMapID)
+    local profile = self.GetActivePRTProfile and self:GetActivePRTProfile() or nil
+    local profileLine = PRT_ColorText("PRT Profile:", PRT.C.TITLE)
+        .. " " .. PRT_ColorText(profile and profile.name or "None", PRT.C.WHITE)
     local text = PRT_ColorText("PRT Zone Detected:", PRT.C.TITLE)
         .. " " .. PRT_ColorText(instanceName or "Raid", PRT.C.WHITE)
+        .. "\n" .. profileLine
         .. "\n" .. table.concat(lines, "\n")
     if self.ShowNotification then
         self:ShowNotification(text, {
@@ -1426,7 +1516,16 @@ initFrame:SetScript("OnEvent", function(self, event, addon)
     self:UnregisterEvent("ADDON_LOADED")
 
     if not PugzRaidToolsDB then PugzRaidToolsDB = {} end
+    local savedFloat = PugzRaidToolsDB.floatingList
+    local migrateFloatWidth = type(savedFloat) == "table"
+        and savedFloat.width == nil
+        and tonumber(savedFloat.textWidth)
+    local legacyFloatWidth = migrateFloatWidth
+        and tonumber(savedFloat.textWidth) or nil
     DeepMerge(PRT.DEFAULTS, PugzRaidToolsDB)
+    if migrateFloatWidth then
+        PugzRaidToolsDB.floatingList.width = legacyFloatWidth
+    end
     PRT.db = PugzRaidToolsDB
 
     PRT.Print("v" .. PRT.VERSION .. " loaded. Type /prt to open.")
@@ -1436,11 +1535,14 @@ initFrame:SetScript("OnEvent", function(self, event, addon)
     if PRT.InitAutoSwap then PRT:InitAutoSwap() end
     if PRT.InitAutoMark then PRT:InitAutoMark() end
     if PRT.InitTargetMarks then PRT:InitTargetMarks() end
+    if PRT.InitInviteToolsPresets then PRT:InitInviteToolsPresets() end
     if PRT.InitPRTProfiles then PRT:InitPRTProfiles() end
     if PRT.InitRaidFeatureStatusWarning then PRT:InitRaidFeatureStatusWarning() end
     if PRT.InitAutoLog then PRT:InitAutoLog() end
+    if PRT.InitRaidCheck then PRT:InitRaidCheck() end
     if PRT.InitInviteTools then PRT:InitInviteTools() end
     if PRT.InitFloatingList then PRT:InitFloatingList() end
+    if PRT.InitProfileFloat then PRT:InitProfileFloat() end
     if PRT.CreateMinimapButton then PRT:CreateMinimapButton() end
 end)
 
@@ -1473,6 +1575,8 @@ SlashCmdList["PRT"] = function(msg)
 
     if msg == "" or msg == "config" or msg == "options" then
         if PRT.ToggleMainFrame then PRT:ToggleMainFrame() end
+    elseif msg == "check" then
+        if PRT.ToggleRaidCheckWindow then PRT:ToggleRaidCheckWindow() end
     elseif msg == "invites on" then
         if PRT.SetRaidInvitesEnabled then PRT:SetRaidInvitesEnabled(true, true) end
     elseif msg == "invites off" then
@@ -1547,6 +1651,12 @@ SlashCmdList["PRT"] = function(msg)
         if PRT.ResetKillCounters then PRT:ResetKillCounters() end
     elseif msg == "resetframe" or msg == "frame reset" or msg == "size reset" then
         if PRT.ResetMainFrameSize then PRT:ResetMainFrameSize() end
+    elseif msg == "debugui on" then
+        if PRT.SetMainFrameDebug then PRT:SetMainFrameDebug(true) end
+    elseif msg == "debugui off" then
+        if PRT.SetMainFrameDebug then PRT:SetMainFrameDebug(false) end
+    elseif msg == "debugui" or msg == "debug ui" then
+        if PRT.DumpMainFrameDebug then PRT:DumpMainFrameDebug() end
     elseif msg == "list" then
         if PRT.ToggleFloatingList then PRT:ToggleFloatingList() end
     elseif msg == "lock" then
@@ -1624,12 +1734,21 @@ SlashCmdList["PRT"] = function(msg)
             PRT:ClearPositionSortLog()
             PRT.Print("Position sort log cleared.")
         end
+    elseif msg == "commands" then
+        if PRT.PrintRaidCheckChatCommands then
+            PRT:PrintRaidCheckChatCommands()
+        end
     elseif msg == "help" then
         PRT.Print("Commands:")
         PRT.Print("  /prt - Toggle config window")
+        PRT.Print("  /prt check - Toggle the Raid Check window")
+        PRT.Print("  /rt check - Toggle the Raid Check window")
+        PRT.Print("  /prt commands - List Raid Check chat commands")
         PRT.Print("  /prt list - Toggle floating list")
         PRT.Print("  /prt lock - Toggle floating list lock")
         PRT.Print("  /prt resetframe - Reset config window size")
+        PRT.Print("  /prt debugui on|off - Record config-window resize diagnostics")
+        PRT.Print("  /prt debugui - Print config-window state and recent resize trace")
         PRT.Print("  /prt groups show - Show floating list")
         PRT.Print("  /prt groups hide - Hide floating list")
         PRT.Print("  /prt autoswap on - Enable Auto Swap")

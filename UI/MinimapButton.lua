@@ -49,6 +49,67 @@ function PRT:UpdateMinimapIconTint()
     end
 end
 
+local function SetMinimapButtonVisuals(btn, shown)
+    local alpha = shown and 1 or 0
+    local regions = { btn.icon, btn.border, btn.highlight }
+    for index = 1, 3 do
+        local region = regions[index]
+        if region then
+            region:SetAlpha(alpha)
+            region:SetShown(shown)
+        end
+    end
+end
+
+local function ReleaseFromHidingBar(btn)
+    local manager = _G.HidingBarAddon
+    if not manager or not manager.btnParams
+        or not manager.btnParams[btn] or not manager.removeMButton then
+        return
+    end
+
+    local ok = pcall(manager.removeMButton, manager, btn, true)
+    if ok then
+        btn._prtReleasedFromHidingBar = true
+    end
+end
+
+local function RestoreToHidingBar(btn)
+    if not btn._prtReleasedFromHidingBar then return end
+    btn._prtReleasedFromHidingBar = nil
+
+    local manager = _G.HidingBarAddon
+    if not manager or not manager.addButtons then return end
+    C_Timer.After(0, function()
+        if btn._prtShouldShow ~= false then
+            pcall(manager.addButtons, manager)
+        end
+    end)
+end
+
+function PRT:UpdateMinimapButtonVisibility()
+    local btn = self.minimapBtn
+    if not btn then return end
+    local db = self:GetDB()
+    local shouldShow = not db.settings
+        or db.settings.showMinimapIcon ~= false
+    btn._prtShouldShow = shouldShow
+    if not shouldShow then
+        -- HidingBar replaces Show/Hide/SetAlpha on managed buttons and can
+        -- otherwise retain an empty clickable slot after PRT hides its art.
+        ReleaseFromHidingBar(btn)
+    end
+    btn:SetAlpha(shouldShow and 1 or 0)
+    btn:EnableMouse(shouldShow)
+    SetMinimapButtonVisuals(btn, shouldShow)
+    if shouldShow then
+        btn:Show()
+        RestoreToHidingBar(btn)
+    else
+        btn:Hide()
+    end
+end
+
 ---------------------------------------------------------------------------
 -- Create button (called from CreateMinimapButton on PLAYER_LOGIN)
 ---------------------------------------------------------------------------
@@ -62,6 +123,7 @@ local function BuildButton()
     btn:SetFrameLevel(8)
     btn:SetClampedToScreen(true)
     btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    btn.highlight = btn:GetHighlightTexture()
 
     -- Icon: 20x20 centred — same size/layer as ShadowNetwork
     local icon = btn:CreateTexture(nil, "BACKGROUND")
@@ -75,6 +137,7 @@ local function BuildButton()
     border:SetSize(54, 54)
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
     border:SetPoint("TOPLEFT")
+    btn.border = border
 
     UpdateMinimapButtonPosition(btn, angle)
 
@@ -153,9 +216,22 @@ local function BuildButton()
     btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     PRT.minimapBtn = btn
+    btn:HookScript("OnShow", function(self)
+        if self._prtShouldShow == false then
+            self:SetAlpha(0)
+            self:EnableMouse(false)
+            SetMinimapButtonVisuals(self, false)
+            C_Timer.After(0, function()
+                if self._prtShouldShow == false then
+                    PRT:UpdateMinimapButtonVisibility()
+                end
+            end)
+        end
+    end)
 
     -- Apply initial tint based on saved Auto Swap state
     PRT:UpdateMinimapIconTint()
+    PRT:UpdateMinimapButtonVisibility()
 end
 
 ---------------------------------------------------------------------------
@@ -175,6 +251,7 @@ function PRT:CreateMinimapButton()
                 local db = PRT:GetDB()
                 UpdateMinimapButtonPosition(PRT.minimapBtn, db.settings.minimapAngle or 195)
                 PRT:UpdateMinimapIconTint()
+                PRT:UpdateMinimapButtonVisibility()
             end
         end)
     end)

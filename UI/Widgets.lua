@@ -69,6 +69,90 @@ function W.CreateHeader(parent, text)
     return fs
 end
 
+W.TEXT_OVERFLOW_ITEMS = {
+    { text = "Expand to fit", value = "expand" },
+    { text = "Truncate with ...", value = "truncate" },
+    { text = "Shrink to fit", value = "shrink" },
+}
+
+W.CONSTRAINED_TEXT_OVERFLOW_ITEMS = {
+    { text = "Truncate with ...", value = "truncate" },
+    { text = "Shrink to fit", value = "shrink" },
+}
+
+local function Utf8CodepointEnds(text)
+    local ends = {}
+    local index = 1
+    local length = #text
+    while index <= length do
+        local byte = string.byte(text, index) or 0
+        local charLength = byte < 0x80 and 1
+            or byte < 0xE0 and 2
+            or byte < 0xF0 and 3
+            or byte < 0xF8 and 4
+            or 1
+        index = math.min(length + 1, index + charLength)
+        ends[#ends + 1] = index - 1
+    end
+    return ends
+end
+
+function W.ApplyTextOverflow(label, text, opts)
+    opts = opts or {}
+    text = tostring(text or "")
+    local mode = opts.mode or "truncate"
+    local fontSize = math.max(6, tonumber(opts.fontSize) or PRT.FONT_SIZE)
+    local minFontSize = math.max(6, tonumber(opts.minFontSize) or 8)
+    local width = math.max(1, tonumber(opts.width) or 1)
+    local height = math.max(1, tonumber(opts.height) or fontSize + 4)
+    local outline = opts.outline or ""
+
+    label:SetFont(PRT.FONT, fontSize, outline)
+    if opts.setWidth ~= false then label:SetWidth(width) end
+    label:SetHeight(height)
+    if label.SetJustifyV then label:SetJustifyV("MIDDLE") end
+    pcall(function() label:SetWordWrap(mode == "wrap") end)
+    pcall(function() label:SetNonSpaceWrap(mode == "wrap") end)
+    pcall(function()
+        label:SetMaxLines(mode == "wrap"
+            and math.max(1, math.floor(height / math.max(1, fontSize)))
+            or 1)
+    end)
+    label:SetText(text)
+
+    if mode == "shrink" then
+        local fittedSize = fontSize
+        while fittedSize > minFontSize and label:GetStringWidth() > width do
+            fittedSize = fittedSize - 1
+            label:SetFont(PRT.FONT, fittedSize, outline)
+        end
+        return fittedSize
+    end
+
+    if mode ~= "truncate" or label:GetStringWidth() <= width then
+        return fontSize
+    end
+
+    local suffix = "..."
+    local ends = Utf8CodepointEnds(text)
+    local low, high = 0, #ends
+    local best = suffix
+    while low <= high do
+        local middle = math.floor((low + high) / 2)
+        local candidate = middle == 0 and suffix
+            or string.sub(text, 1, ends[middle]) .. suffix
+        label:SetText(candidate)
+        if label:GetStringWidth() <= width then
+            best = candidate
+            low = middle + 1
+        else
+            high = middle - 1
+        end
+    end
+    label:SetText(best)
+    return fontSize
+end
+
 function W.CreateDescription(parent, text, opts)
     opts = opts or {}
     local fs = W.CreateLabel(parent, text or "", opts.fontSize or PRT.FONT_SIZE,
@@ -232,6 +316,7 @@ function W.CreateSelectableButton(parent, text, opts)
     btn._selectedText = selectedText
     btn._selected = false
     btn._mrtHoverAnimation = opts.hoverAnimation == "MRT"
+    btn._mrtHoverHeight = opts.hoverAnimationHeight or btn:GetHeight()
 
     local function ApplyBackground(self, color)
         self._bgTex:SetColorTexture(color[1], color[2], color[3], color[4] or 1)
@@ -243,7 +328,7 @@ function W.CreateSelectableButton(parent, text, opts)
         local texture = self:CreateTexture(nil, "ARTWORK")
         texture:SetPoint("LEFT", 0, 0)
         texture:SetPoint("RIGHT", 0, 0)
-        texture:SetHeight(opts.hoverAnimationHeight or self:GetHeight())
+        texture:SetHeight(self._mrtHoverHeight or self:GetHeight())
         texture:SetColorTexture(0.5, 0.5, 0.5, 0.2)
 
         local anim = self:CreateAnimationGroup()
@@ -304,6 +389,13 @@ function W.CreateSelectableButton(parent, text, opts)
         local timer = self._mrtHoverTimer
         timer.cR, timer.cG, timer.cB, timer.cA = 0.5, 0.5, 0.5, 0.2
         timer.hideOnEnd = false
+    end
+
+    function btn:SetHoverAnimationHeight(height)
+        self._mrtHoverHeight = math.max(1, tonumber(height) or self:GetHeight())
+        if self._mrtHoverTexture then
+            self._mrtHoverTexture:SetHeight(self._mrtHoverHeight)
+        end
     end
 
     function btn:SetHoverAnimationSuspended(suspended)
@@ -484,6 +576,7 @@ function W.AttachTooltip(frame, opts)
     local title = opts.title
     local titleColor = opts.titleColor or { 1, 1, 1, 1 }
     local lineColor = opts.lineColor or { 1, 1, 1, 1 }
+    local minWidth = math.max(0, tonumber(opts.minWidth) or 0)
     local lines    = opts.lines    or {}   -- static lines array
     local getLines = opts.getLines         -- optional function() → lines array for dynamic content
 
@@ -493,6 +586,9 @@ function W.AttachTooltip(frame, opts)
         if shouldShow and not shouldShow(self) then return end
         GameTooltip:SetOwner(self, anchor)
         GameTooltip:ClearLines()
+        if GameTooltip.SetMinimumWidth then
+            GameTooltip:SetMinimumWidth(minWidth)
+        end
         if title then
             GameTooltip:AddLine(title, titleColor[1], titleColor[2], titleColor[3], titleColor[4] or 1)
         end
@@ -510,7 +606,12 @@ function W.AttachTooltip(frame, opts)
     -- HookScript instead of SetScript so tooltip composes with existing
     -- OnEnter/OnLeave handlers (e.g. hover-colour effects on buttons).
     frame:HookScript("OnEnter", showTooltip)
-    frame:HookScript("OnLeave", function() GameTooltip:Hide() end)
+    frame:HookScript("OnLeave", function()
+        if GameTooltip.SetMinimumWidth then
+            GameTooltip:SetMinimumWidth(0)
+        end
+        GameTooltip:Hide()
+    end)
     return frame
 end
 
@@ -1528,6 +1629,7 @@ function W.CreateSlider(parent, label, minVal, maxVal, step, width, onChanged)
     end)
 
     frame.slider = slider
+    frame.title = title
     frame.valText = valText
 
     function frame:SetValue(v)
@@ -1539,6 +1641,74 @@ function W.CreateSlider(parent, label, minVal, maxVal, step, width, onChanged)
     end
 
     return frame
+end
+
+function W.CreateExactSlider(parent, label, minVal, maxVal, step, width,
+        onChanged, decimals)
+    local exactEdit
+    decimals = decimals or 0
+    local format = "%." .. decimals .. "f"
+    local frame = W.CreateSlider(parent, label, minVal, maxVal, step, width,
+        function(value)
+            if exactEdit and not exactEdit:HasFocus() then
+                exactEdit:SetText(format:format(value))
+            end
+            if onChanged then onChanged(value) end
+        end)
+    frame.valText:Hide()
+
+    exactEdit = W.CreateEditBox(frame, 62, 20)
+    exactEdit:SetPoint("TOPRIGHT", 0, 3)
+    exactEdit:SetMaxLetters(8)
+
+    local function Commit()
+        local value = tonumber(exactEdit:GetText())
+        if not value then value = frame:GetValue() end
+        value = math.max(minVal, math.min(maxVal, value))
+        value = math.floor(value / step + 0.5) * step
+        frame:SetValue(value)
+        exactEdit:SetText(format:format(value))
+    end
+    exactEdit:SetScript("OnEnterPressed", function(self)
+        Commit()
+        self:ClearFocus()
+    end)
+    exactEdit:SetScript("OnEditFocusLost", Commit)
+
+    function frame:SetExactValue(value)
+        value = tonumber(value) or minVal
+        self:SetValue(value)
+        exactEdit:SetText(format:format(value))
+    end
+    frame.exactEdit = exactEdit
+    return frame
+end
+
+function W.SetControlEnabled(control, enabled)
+    if not control then return end
+    enabled = enabled and true or false
+    control._prtEnabled = enabled
+    control:SetAlpha(enabled and 1 or 0.35)
+
+    local targets = {
+        control,
+        control.check,
+        control.slider,
+        control.exactEdit,
+        control.editBox,
+    }
+    for _, target in ipairs(targets) do
+        if target then
+            if target.SetEnabled then
+                target:SetEnabled(enabled)
+            elseif target.Enable and target.Disable then
+                if enabled then target:Enable() else target:Disable() end
+            elseif target.EnableMouse then
+                target:EnableMouse(enabled)
+            end
+        end
+    end
+    if not enabled and control.menu then control.menu:Hide() end
 end
 
 ---------------------------------------------------------------------------
@@ -1584,6 +1754,12 @@ function W.CreateScrollFrame(parent, width, height)
         sb.UpdateRange()
     end
 
+    function container:ScrollToBottom()
+        sb.UpdateRange()
+        local _, maximum = sb.slider:GetMinMaxValues()
+        sb.slider:SetValue(maximum)
+    end
+
     return container
 end
 
@@ -1597,8 +1773,10 @@ end
 --                          db.notification so the user's Settings tab applies).
 -- opts.soundFile           overrides the saved notification sound for this call.
 -- opts.forceSound          plays opts.soundFile even when notification sound is off.
+-- opts.playSound           explicitly enables/disables sound for this call.
 -- opts.force               shows the notification even when notifications are off.
 -- opts.fontSize/duration   override saved settings for this call only.
+-- opts.x/opts.y            override saved screen offsets for this call only.
 ---------------------------------------------------------------------------
 function PRT:ShowNotification(text, opts)
     opts = opts or {}
@@ -1630,12 +1808,16 @@ function PRT:ShowNotification(text, opts)
     nf.label:SetTextColor(fc[1], fc[2], fc[3], 1)
 
     nf:ClearAllPoints()
-    nf:SetPoint("CENTER", UIParent, "CENTER", cfg.x or 0, cfg.y or 80)
+    nf:SetPoint("CENTER", UIParent, "CENTER",
+        opts.x ~= nil and opts.x or cfg.x or 0,
+        opts.y ~= nil and opts.y or cfg.y or 80)
     nf:SetAlpha(1)
     nf:Show()
 
     -- Play sound if enabled
-    if cfg.sound or opts.forceSound then
+    local playSound = opts.playSound
+    if playSound == nil then playSound = cfg.sound or opts.forceSound end
+    if playSound then
         PlaySoundFile(opts.soundFile or PRT.SND_MARIO, "Master")
     end
 

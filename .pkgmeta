@@ -1,5 +1,11 @@
 package-as: PugzRaidTools
 enable-nolib-creation: no
+ignore:
+  - .github
+  - .git
+  - .gitattributes
+  - .pkgmeta
+  - BuildRelease.ps1
 manual-changelog:
   filename: CHANGELOG.md
   markup-type: markdown
