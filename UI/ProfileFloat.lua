@@ -370,7 +370,7 @@ function PRT:RefreshProfileFloat()
     frame:SetSize(width, height)
     frame.button:SetSize(innerWidth, innerHeight)
     W.ApplyTextOverflow(frame.button.label,
-        "Profile: " .. (store.activeProfile or ""), {
+        self:GetProfileFloatButtonText(store.activeProfile), {
             mode = textMode,
             fontSize = fontSize,
             minFontSize = MIN_FONT_SIZE,
@@ -440,7 +440,7 @@ function PRT:RefreshEmbeddedProfileSelector(frameWidth, rowHeight, fontSize,
     frame.profileButton.label:SetPoint("LEFT", frame.profileButton, "LEFT", 6, 0)
     frame.profileButton.label:SetJustifyH(alignment)
     W.ApplyTextOverflow(frame.profileButton.label,
-        "Profile: " .. (store.activeProfile or ""), {
+        self:GetProfileFloatButtonText(store.activeProfile), {
             mode = textMode,
             fontSize = fontSize,
             minFontSize = MIN_FONT_SIZE,

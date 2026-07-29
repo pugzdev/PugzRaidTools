@@ -490,8 +490,8 @@ function PRT:RefreshFloatingList()
 
     if profileEmbedded then
         f.profileButton.label:SetFont(PRT.FONT, fontSize, outline)
-        local activeProfileLabel =
-            "Profile: " .. (db.prtProfiles.activeProfile or "")
+        local activeProfileLabel = PRT:GetProfileFloatButtonText(
+            db.prtProfiles.activeProfile)
         f.profileButton.label:SetText(activeProfileLabel)
         maxW = math.max(maxW, f.profileButton.label:GetStringWidth() + 28)
         for _, profile in ipairs(db.prtProfiles.profiles or {}) do

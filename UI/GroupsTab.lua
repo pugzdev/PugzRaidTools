@@ -1150,8 +1150,12 @@ function PRT:BuildGroupsTab()
     })
 
     local compConfirmPopup = W.CreateConfirmPopup("PRT_GroupsConfirmPopup", {
-        width = 340,
-        height = 110,
+        width = 280,
+        height = 92,
+        buttonWidth = 74,
+        cancelWidth = 74,
+        buttonHeight = 22,
+        buttonY = 7,
         confirmTextColor = PRT.C.RED,
     })
 

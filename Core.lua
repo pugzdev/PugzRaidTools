@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.3.0"
+PRT.VERSION = "1.3.1"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -422,6 +422,7 @@ PRT.DEFAULTS = {
         height = 30,
         fontSize = 12,
         textMode = "truncate",
+        buttonTextMode = "full",
         bgAlpha = 0.92,
         notificationEnabled = true,
         notificationSound = true,

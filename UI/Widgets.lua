@@ -702,6 +702,12 @@ function W.CreatePopupFrame(name, width, height, opts)
     f._frontStrata = opts.frontStrata or opts.strata or "TOOLTIP"
     f.BringToFront = function(self)
         BringPopupToFront(self, self._frontStrata)
+        local dropdownMenu = self._activeDropdownMenu
+        if dropdownMenu and dropdownMenu.IsShown
+            and dropdownMenu:IsShown()
+            and dropdownMenu._raiseAboveOwner then
+            dropdownMenu:_raiseAboveOwner()
+        end
     end
     f:HookScript("OnShow", function(self)
         self:BringToFront()
@@ -1492,8 +1498,9 @@ end
 ---------------------------------------------------------------------------
 -- Dropdown (custom, no UIDropDownMenu dependency)
 ---------------------------------------------------------------------------
-function W.CreateDropdown(parent, width, items, onSelect)
+function W.CreateDropdown(parent, width, items, onSelect, opts)
     -- items = { { text="X", value=v }, ... }
+    opts = opts or {}
     local dd = CreateFrame("Frame", nil, parent)
     dd:SetSize(width or 180, 24)
     W.StyleBox(dd, PRT.C.INPUT_BG, PRT.C.BORDER)
@@ -1515,7 +1522,58 @@ function W.CreateDropdown(parent, width, items, onSelect)
     dd.menu:SetFrameStrata("TOOLTIP")
     dd.menu:SetClampedToScreen(true)
     dd.menu:Hide()
+
+    local function FindMenuOwnerAndLevel()
+        local owner
+        local highestLevel =
+            dd.GetFrameLevel and dd:GetFrameLevel() or 0
+        local current = dd.GetParent and dd:GetParent() or nil
+        while current and current ~= UIParent do
+            if current.GetFrameLevel then
+                highestLevel =
+                    math.max(highestLevel, current:GetFrameLevel())
+            end
+            if not owner and current.BringToFront then
+                owner = current
+            end
+            current = current.GetParent and current:GetParent() or nil
+        end
+        return owner, highestLevel
+    end
+
+    local function RaiseMenuAboveOwner()
+        if not dd.menu:IsShown() then return end
+        local owner, highestLevel = FindMenuOwnerAndLevel()
+        dd._menuOwner = owner
+        if owner then
+            local previous = owner._activeDropdownMenu
+            if previous and previous ~= dd.menu
+                and previous.IsShown and previous:IsShown() then
+                previous:Hide()
+            end
+            owner._activeDropdownMenu = dd.menu
+        end
+        if dd.menu.SetToplevel then
+            dd.menu:SetToplevel(true)
+        end
+        dd.menu:SetFrameStrata("TOOLTIP")
+        dd.menu:SetFrameLevel(highestLevel + 100)
+        if dd.menu.Raise then dd.menu:Raise() end
+    end
+    dd.menu._raiseAboveOwner = RaiseMenuAboveOwner
+
     dd.menu:SetScript("OnShow", function(self)
+        RaiseMenuAboveOwner()
+        C_Timer.After(0, function()
+            if self and self.IsShown and self:IsShown() then
+                RaiseMenuAboveOwner()
+            end
+        end)
+        C_Timer.After(0.05, function()
+            if self and self.IsShown and self:IsShown() then
+                RaiseMenuAboveOwner()
+            end
+        end)
         self:SetWidth(dd:GetWidth())
         -- rebuild children
         for _, child in ipairs(self.rows or {}) do child:Hide() end
@@ -1524,23 +1582,56 @@ function W.CreateDropdown(parent, width, items, onSelect)
         for i, item in ipairs(dd.items) do
             local row = self.rows[i]
             if not row then
-                row = CreateFrame("Button", nil, self)
-                row:SetHeight(20)
-                W.AddBackground(row, 0.05, 0.05, 0.05, 0.98)  -- opaque so it covers content behind
-                row.text = W.CreateLabel(row, "", PRT.FONT_SIZE, 1, 1, 1)
-                row.text:SetPoint("LEFT", 8, 0)
-                row.text:SetJustifyH("LEFT")
-                row:SetScript("OnEnter", function(r)
-                    r._bgTex:SetColorTexture(PRT.C.SIDEBAR_SEL[1], PRT.C.SIDEBAR_SEL[2], PRT.C.SIDEBAR_SEL[3], PRT.C.SIDEBAR_SEL[4])
-                end)
-                row:SetScript("OnLeave", function(r)
-                    r._bgTex:SetColorTexture(0, 0, 0, 0)
-                end)
+                if opts.hoverAnimation == "MRT" then
+                    row = W.CreateSelectableButton(self, "", {
+                        width = width or 180,
+                        height = 20,
+                        bgColor = { 0.05, 0.05, 0.05, 0 },
+                        borderColor = { 0, 0, 0, 0 },
+                        textColor = { 1, 1, 1, 1 },
+                        labelPoint = { "LEFT", 8, 0 },
+                        justifyH = "LEFT",
+                        hoverAnimation = "MRT",
+                        hoverAnimationHeight = 20,
+                    })
+                    row.text = row.label
+                else
+                    row = CreateFrame("Button", nil, self)
+                    row:SetHeight(20)
+                    W.AddBackground(
+                        row, 0.05, 0.05, 0.05, 0.98)
+                    row.text = W.CreateLabel(
+                        row, "", PRT.FONT_SIZE, 1, 1, 1)
+                    row.text:SetPoint("LEFT", 8, 0)
+                    row.text:SetJustifyH("LEFT")
+                    row:SetScript("OnEnter", function(r)
+                        r._bgTex:SetColorTexture(
+                            PRT.C.SIDEBAR_SEL[1],
+                            PRT.C.SIDEBAR_SEL[2],
+                            PRT.C.SIDEBAR_SEL[3],
+                            PRT.C.SIDEBAR_SEL[4])
+                    end)
+                    row:SetScript("OnLeave", function(r)
+                        r._bgTex:SetColorTexture(0, 0, 0, 0)
+                    end)
+                end
                 self.rows[i] = row
             end
             row:SetPoint("TOPLEFT", 0, -h)
             row:SetPoint("TOPRIGHT", 0, -h)
             row.text:SetText(item.text)
+            local textColor =
+                item.textColor or opts.textColor or { 1, 1, 1, 1 }
+            row.text:SetTextColor(
+                textColor[1], textColor[2], textColor[3],
+                textColor[4] or 1)
+            if row._normalText then
+                row._normalText = textColor
+                row._selectedText = textColor
+            end
+            if row.ResetHoverAnimation then
+                row:ResetHoverAnimation()
+            end
             row.value = item.value
             row:SetScript("OnClick", function(r)
                 dd:SetSelected(r.value, item.text)
@@ -1567,22 +1658,36 @@ function W.CreateDropdown(parent, width, items, onSelect)
     end)
 
     -- close when clicking elsewhere
-    dd.menu:SetScript("OnHide", function() end)
+    dd.menu:SetScript("OnHide", function(self)
+        local owner = dd._menuOwner
+        if owner and owner._activeDropdownMenu == self then
+            owner._activeDropdownMenu = nil
+        end
+        dd._menuOwner = nil
+    end)
     dd:SetScript("OnHide", function() dd.menu:Hide() end)
 
     function dd:SetSelected(value, text)
         self.selectedValue = value
+        local selectedItem
+        for _, item in ipairs(self.items) do
+            if item.value == value then
+                selectedItem = item
+                break
+            end
+        end
         if text then
             self.label:SetText(text)
+        elseif selectedItem then
+            self.label:SetText(selectedItem.text)
         else
-            for _, item in ipairs(self.items) do
-                if item.value == value then
-                    self.label:SetText(item.text)
-                    return
-                end
-            end
             self.label:SetText(tostring(value))
         end
+        local textColor = selectedItem and selectedItem.textColor
+            or opts.textColor or { 1, 1, 1, 1 }
+        self.label:SetTextColor(
+            textColor[1], textColor[2], textColor[3],
+            textColor[4] or 1)
     end
 
     function dd:GetSelected()

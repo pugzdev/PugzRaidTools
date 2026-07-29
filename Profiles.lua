@@ -12,6 +12,47 @@ local FEATURE_KEYS = {
     inviteTools = "inviteToolsPreset",
 }
 
+local PROFILE_FLOAT_BUTTON_TEXT_MODES = {
+    full = true,
+    short = true,
+    name = true,
+}
+
+function PRT:GetProfileFloatButtonTextMode()
+    local db = self:GetDB()
+    db.profileFloat = db.profileFloat or {}
+    local mode = db.profileFloat.buttonTextMode
+    if not PROFILE_FLOAT_BUTTON_TEXT_MODES[mode] then
+        mode = "full"
+        db.profileFloat.buttonTextMode = mode
+    end
+    return mode
+end
+
+function PRT:GetProfileFloatButtonText(profileName)
+    local name = PRT.Trim(tostring(profileName or ""))
+    if name == "" then name = "None" end
+
+    local mode = self:GetProfileFloatButtonTextMode()
+    if mode == "short" then
+        return "P: " .. name .. ":"
+    elseif mode == "name" then
+        return name
+    end
+    return "Profile: " .. name
+end
+
+function PRT:SetProfileFloatButtonTextMode(mode)
+    if not PROFILE_FLOAT_BUTTON_TEXT_MODES[mode] then
+        mode = "full"
+    end
+    local db = self:GetDB()
+    db.profileFloat = db.profileFloat or {}
+    db.profileFloat.buttonTextMode = mode
+    if self.UpdateProfileFloat then self:UpdateProfileFloat() end
+    return mode
+end
+
 local function NormalizeProfile(profile, db)
     profile.name = PRT.Trim(tostring(profile.name or ""))
     if profile.name == "" then profile.name = "Profile" end

@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.1 - 2026-07-29
+
+### Added
+
+- Added three selectable Profile Float main-button labels: `Profile: ProfileName`, `P: ProfileName:`, and `ProfileName`.
+- Added `!logs`, `!disallowed`, `!banned`, and `!invalid` Raid Check chat aliases for reporting detected Logs! effects and affected players.
+- Added complete Alias Database import and export, including merge, automatic rename, and skip choices for duplicate alias names plus keep-or-skip handling for realm-aware characters already stored under other aliases.
+- Added direct Alias Database merging with live name search, clickable suggestions, duplicate-safe character combining, and confirmation before the source alias is removed.
+- Added clickable Raid Check column reports for ready responses, preparation categories, class buffs, Logs! warnings, durability, and targeted Potion icons, with context-specific Shift-click reports.
+
+### Changed
+
+- Reorganized the Settings tab into one scrollable page with clearly separated General Interface, Floating Group List, Group Swap Notifications, Combat Logging, and About sections.
+- Condensed the Raid Groups Delete and Delete All confirmation windows to better fit their short prompts.
+- Streamlined the Raid Check documentation in the public README while retaining detailed implementation notes in the development documentation.
+- Dropdown menus now remain raised above their owning popup through delayed and subsequent popup focus changes, fixing the Class selector initially appearing underneath the Add Character window.
+- Alias exports and imports now use the `[PRT Alias Database v2]` comma-delimited format so WoW cannot consume `|R` from `|ROGUE` as a text-formatting code.
+- The Add Character Class dropdown now uses the existing fading row-hover animation and colours every class entry and selected value with its class colour; Unknown remains grey.
+- Alias and character deletion now use a compact Alias Database confirmation window with concise prompts and evenly sized actions.
+- The Alias Database now opens at 540x640 and can be resized down to 540x320.
+- Raid Check scans now retain aura-caster names when WoW provides them and preserve each player's slot within their raid group for wrong-rank and player-specific buff reports.
+
 ## 1.3.0 - 2026-07-28
 
 ### New Major Features

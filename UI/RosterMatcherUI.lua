@@ -7,8 +7,10 @@ local W = PRT.UI
 
 local MATCHER_WIDTH = 1120
 local MATCHER_HEIGHT = 700
-local ALIAS_WIDTH = 760
+local ALIAS_WIDTH = 540
 local ALIAS_HEIGHT = 640
+local ALIAS_MIN_WIDTH = 540
+local ALIAS_MIN_HEIGHT = 320
 local SCREEN_MARGIN = 20
 local RESIZE_GRIP_SIZE = 16
 
@@ -16,6 +18,11 @@ local matcherPopup
 local aliasPopup
 local aliasNamePopup
 local aliasCharacterPopup
+local aliasImportPopup
+local aliasExportPopup
+local aliasImportOptionsPopup
+local aliasMergePopup
+local aliasDeleteConfirmPopup
 local matcherConfirmPopup
 local MatcherApplySelections
 local MatcherRefresh
@@ -238,6 +245,27 @@ local function EnsureCommonPopups()
         end)
     end
 
+    if not aliasDeleteConfirmPopup then
+        aliasDeleteConfirmPopup = W.CreateConfirmPopup(
+            "PRT_RosterAliasDeleteConfirmPopup", {
+                width = 300,
+                height = 92,
+                buttonWidth = 134,
+                cancelWidth = 134,
+                buttonHeight = 22,
+                buttonY = 7,
+                confirmTextColor = PRT.C.RED,
+                bgColor = { 0, 0, 0, 1.0 },
+            })
+        aliasDeleteConfirmPopup:HookScript("OnShow", function(self)
+            BringPopupToFront(self)
+        end)
+        aliasDeleteConfirmPopup:HookScript(
+            "OnMouseDown", function(self)
+                BringPopupToFront(self)
+            end)
+    end
+
     if not aliasNamePopup then
         aliasNamePopup = W.CreateNamePopup("PRT_RosterAliasNamePopup", {
             width = 340,
@@ -284,15 +312,27 @@ local function EnsureCommonPopups()
     local classLbl = W.CreateLabel(aliasCharacterPopup, "Class", PRT.FONT_SIZE, 1, 1, 1)
     classLbl:SetPoint("TOPLEFT", 12, -84)
     local classItems = {
-        { text = "Unknown", value = "" },
+        {
+            text = "Unknown",
+            value = "",
+            textColor = {
+                PRT.C.GRAY[1], PRT.C.GRAY[2],
+                PRT.C.GRAY[3], 1,
+            },
+        },
     }
     for _, classFile in ipairs(PRT:GetRosterMatcherClassOptions()) do
+        local r, g, b = PRT:GetMatcherClassColor(classFile)
         classItems[#classItems + 1] = {
             text = PRT:GetMatcherClassLabel(classFile),
             value = classFile,
+            textColor = { r, g, b, 1 },
         }
     end
-    local classDD = W.CreateDropdown(aliasCharacterPopup, 156, classItems)
+    local classDD = W.CreateDropdown(
+        aliasCharacterPopup, 156, classItems, nil, {
+            hoverAnimation = "MRT",
+        })
     classDD:SetPoint("TOPLEFT", 12, -102)
     classDD:SetSelected("", "Unknown")
     aliasCharacterPopup.classDD = classDD
@@ -341,6 +381,467 @@ local function EnsureCommonPopups()
     end
 end
 
+local function EnsureAliasMergePopup()
+    if aliasMergePopup then return aliasMergePopup end
+
+    aliasMergePopup = W.CreatePopupFrame(
+        "PRT_RosterAliasMergePopup", 440, 320, {
+            title = "Merge Alias",
+            bgColor = { 0, 0, 0, 1.0 },
+        })
+    aliasMergePopup:HookScript("OnShow", function(self)
+        BringPopupToFront(self)
+    end)
+    aliasMergePopup:HookScript("OnMouseDown", function(self)
+        BringPopupToFront(self)
+    end)
+
+    local description = W.CreateDescription(aliasMergePopup, "", {
+        width = 416,
+    })
+    description:SetPoint("TOPLEFT", 12, -34)
+    aliasMergePopup.description = description
+
+    local searchLabel =
+        W.CreateLabel(aliasMergePopup, "Merge into", PRT.FONT_SIZE, 1, 1, 1)
+    searchLabel:SetPoint("TOPLEFT", 12, -62)
+
+    local searchBox = W.CreateEditBox(
+        aliasMergePopup, 416, 24, "Type an alias name...")
+    searchBox:SetPoint("TOPLEFT", 12, -80)
+    searchBox:SetPoint("TOPRIGHT", -12, -80)
+    aliasMergePopup.searchBox = searchBox
+
+    local scroll = W.CreateScrollFrame(aliasMergePopup, 416, 150)
+    scroll:SetPoint("TOPLEFT", 12, -114)
+    scroll:SetPoint("BOTTOMRIGHT", -12, 48)
+    aliasMergePopup.scroll = scroll
+    aliasMergePopup.rows = {}
+
+    local noResults = W.CreateDescription(
+        scroll.content, "No matching aliases.", {
+            width = 388,
+            justifyH = "CENTER",
+        })
+    noResults:SetPoint("TOPLEFT", 8, -12)
+    noResults:SetPoint("TOPRIGHT", -8, -12)
+    aliasMergePopup.noResults = noResults
+
+    local mergeBtn = W.CreateButton(aliasMergePopup, "Merge", 110, 24)
+    mergeBtn:SetPoint("BOTTOMLEFT", 12, 12)
+    W.SetControlEnabled(mergeBtn, false)
+    aliasMergePopup.mergeBtn = mergeBtn
+
+    local cancelBtn = W.CreateButton(aliasMergePopup, "Cancel", 110, 24)
+    cancelBtn:SetPoint("LEFT", mergeBtn, "RIGHT", 8, 0)
+    cancelBtn:SetScript("OnClick", function()
+        aliasMergePopup:Hide()
+    end)
+
+    local function GetFilteredDestinations(popup)
+        local query = PRT:NormalizeMatchText(popup.searchBox:GetText())
+        local destinations = {}
+        for _, alias in ipairs(PRT:GetRosterAliasList()) do
+            if alias.id ~= popup._sourceAliasId then
+                local labelNorm = PRT:NormalizeMatchText(alias.label)
+                local matchAt = query == ""
+                    and 1 or labelNorm:find(query, 1, true)
+                if matchAt then
+                    destinations[#destinations + 1] = {
+                        alias = alias,
+                        matchAt = matchAt,
+                    }
+                end
+            end
+        end
+
+        table.sort(destinations, function(a, b)
+            local aPrefix = a.matchAt == 1
+            local bPrefix = b.matchAt == 1
+            if aPrefix ~= bPrefix then
+                return aPrefix
+            end
+            return string.lower(a.alias.label or "")
+                < string.lower(b.alias.label or "")
+        end)
+        return destinations
+    end
+
+    function aliasMergePopup:RefreshResults()
+        local source = PRT:GetAliasById(self._sourceAliasId)
+        if not source then
+            self:Hide()
+            return
+        end
+
+        if self._destinationAliasId
+            and not PRT:GetAliasById(self._destinationAliasId) then
+            self._destinationAliasId = nil
+        end
+
+        local destinations = GetFilteredDestinations(self)
+        self._visibleDestinationIds = {}
+
+        for _, row in ipairs(self.rows) do
+            row:Hide()
+            row:SetSelected(false)
+        end
+
+        for index, entry in ipairs(destinations) do
+            local alias = entry.alias
+            local row = self.rows[index]
+            if not row then
+                row = W.CreateSelectableButton(self.scroll.content, "", {
+                    height = 24,
+                    bgColor = { 0.025, 0.025, 0.025, 1.0 },
+                    hoverAnimation = "MRT",
+                    labelPoint = { "LEFT", 8, 0 },
+                    justifyH = "LEFT",
+                })
+                row.label:SetPoint("RIGHT", -8, 0)
+                row:SetScript("OnClick", function(button)
+                    local selected =
+                        PRT:GetAliasById(button._aliasId)
+                    if not selected then return end
+                    aliasMergePopup._destinationAliasId =
+                        selected.id
+                    aliasMergePopup._settingSearch = true
+                    aliasMergePopup.searchBox:SetText(
+                        selected.label or "")
+                    aliasMergePopup._settingSearch = false
+                    aliasMergePopup:RefreshResults()
+                end)
+                self.rows[index] = row
+            end
+
+            local characterCount = #(alias.characters or {})
+            local characterWord =
+                characterCount == 1 and "character" or "characters"
+            row.label:SetText((alias.label or "")
+                .. "  (" .. tostring(characterCount)
+                .. " " .. characterWord .. ")")
+            row._aliasId = alias.id
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", 0, -((index - 1) * 26))
+            row:SetPoint("TOPRIGHT", 0, -((index - 1) * 26))
+            row:SetSelected(
+                self._destinationAliasId == alias.id)
+            row:Show()
+            self._visibleDestinationIds[index] = alias.id
+        end
+
+        self.noResults:SetShown(#destinations == 0)
+        self.scroll:UpdateContentHeight(
+            math.max(32, (#destinations * 26) + 2))
+        W.SetControlEnabled(
+            self.mergeBtn, self._destinationAliasId ~= nil)
+    end
+
+    function aliasMergePopup:OpenForAlias(sourceAliasId)
+        local source = PRT:GetAliasById(sourceAliasId)
+        if not source then
+            PRT.Print("Alias not found.")
+            return
+        end
+        if #PRT:GetRosterAliasList() < 2 then
+            PRT.Print("Create another alias before merging.")
+            return
+        end
+
+        self._sourceAliasId = source.id
+        self._destinationAliasId = nil
+        self.description:SetText(
+            "Merge '" .. (source.label or "")
+                .. "' into another alias. The selected alias name is retained.")
+        self._settingSearch = true
+        self.searchBox:SetText("")
+        self._settingSearch = false
+        self:RefreshResults()
+        self:Show()
+        PromotePopup(self, "TOOLTIP")
+        self.searchBox:SetFocus()
+    end
+
+    searchBox:HookScript("OnTextChanged", function()
+        if aliasMergePopup._settingSearch then return end
+        aliasMergePopup._destinationAliasId = nil
+        aliasMergePopup:RefreshResults()
+    end)
+    searchBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+        aliasMergePopup:Hide()
+    end)
+    searchBox:SetScript("OnEnterPressed", function(self)
+        local firstId =
+            aliasMergePopup._visibleDestinationIds
+                and aliasMergePopup._visibleDestinationIds[1]
+        if firstId then
+            local selected = PRT:GetAliasById(firstId)
+            aliasMergePopup._destinationAliasId = firstId
+            aliasMergePopup._settingSearch = true
+            self:SetText(selected and selected.label or self:GetText())
+            aliasMergePopup._settingSearch = false
+            aliasMergePopup:RefreshResults()
+        end
+        self:ClearFocus()
+    end)
+
+    mergeBtn:SetScript("OnClick", function()
+        local source =
+            PRT:GetAliasById(aliasMergePopup._sourceAliasId)
+        local destination =
+            PRT:GetAliasById(aliasMergePopup._destinationAliasId)
+        if not source or not destination then
+            PRT.Print("Choose an alias to merge into.")
+            return
+        end
+
+        OpenPopupOnTop(matcherConfirmPopup, {
+            title = "Merge Aliases",
+            message = "Merge '" .. (source.label or "")
+                .. "' into '" .. (destination.label or "")
+                .. "'? Characters will be combined and '"
+                .. (source.label or "") .. "' will be removed.",
+            confirmText = "Merge",
+            onConfirm = function()
+                local result, err = PRT:MergeRosterAliases(
+                    source.id, destination.id)
+                if not result then
+                    PRT.Print(err or "Unable to merge aliases.")
+                    return false
+                end
+
+                aliasMergePopup:Hide()
+                RequestAliasRefresh()
+                if matcherPopup and matcherPopup:IsShown() then
+                    RequestMatcherRefresh()
+                end
+
+                local duplicateCount =
+                    result.charactersSkippedDuplicate or 0
+                PRT.Print("Merged '" .. (result.sourceLabel or "")
+                    .. "' into '" .. (result.destinationLabel or "")
+                    .. "': " .. tostring(result.charactersAdded or 0)
+                    .. " added, " .. tostring(duplicateCount)
+                    .. " duplicate"
+                    .. (duplicateCount == 1 and "" or "s")
+                    .. " combined.")
+                return true
+            end,
+        })
+    end)
+
+    return aliasMergePopup
+end
+
+local function FormatAliasImportResult(result)
+    local aliasParts = {
+        tostring(result.aliasesCreated or 0) .. " created",
+        tostring(result.aliasesMerged or 0) .. " merged",
+    }
+    if (result.aliasesRenamed or 0) > 0 then
+        aliasParts[#aliasParts + 1] =
+            tostring(result.aliasesRenamed) .. " renamed"
+    end
+    if (result.aliasesSkipped or 0) > 0 then
+        aliasParts[#aliasParts + 1] =
+            tostring(result.aliasesSkipped) .. " skipped"
+    end
+
+    local characterParts = {
+        tostring(result.charactersAdded or 0) .. " added",
+    }
+    if (result.charactersSkippedDuplicate or 0) > 0 then
+        characterParts[#characterParts + 1] =
+            tostring(result.charactersSkippedDuplicate)
+                .. " exact duplicates skipped"
+    end
+    if (result.charactersSkippedConflict or 0) > 0 then
+        characterParts[#characterParts + 1] =
+            tostring(result.charactersSkippedConflict)
+                .. " shared-character copies skipped"
+    end
+    if (result.charactersSkippedAlias or 0) > 0 then
+        characterParts[#characterParts + 1] =
+            tostring(result.charactersSkippedAlias)
+                .. " skipped with aliases"
+    end
+
+    return "Alias import complete: "
+        .. table.concat(aliasParts, ", ")
+        .. "; characters " .. table.concat(characterParts, ", ") .. "."
+end
+
+local function EnsureAliasTransferPopups()
+    if aliasImportPopup then return end
+
+    aliasImportPopup = W.CreateTextTransferPopup(
+        "PRT_RosterAliasImportPopup", {
+            width = 560,
+            height = 330,
+            title = "Import Alias Database",
+            instruction =
+                "Paste a PRT Alias Database export. Existing aliases are kept; conflict choices follow after validation.",
+            actionText = "Continue",
+            actionWidth = 90,
+            showCancel = true,
+            bgColor = { 0, 0, 0, 1.0 },
+        })
+    aliasExportPopup = W.CreateTextTransferPopup(
+        "PRT_RosterAliasExportPopup", {
+            width = 560,
+            height = 330,
+            title = "Export Alias Database",
+            instruction =
+                "Copy this text to transfer every alias and its realm-aware characters.",
+            actionText = "Close",
+            bgColor = { 0, 0, 0, 1.0 },
+        })
+
+    aliasImportOptionsPopup = W.CreatePopupFrame(
+        "PRT_RosterAliasImportOptionsPopup", 560, 228, {
+            title = "Alias Import Conflicts",
+            bgColor = { 0, 0, 0, 1.0 },
+        })
+
+    local summary = W.CreateDescription(
+        aliasImportOptionsPopup, "", {
+            width = 536,
+            color = { 0.9, 0.9, 0.9, 1 },
+        })
+    summary:SetPoint("TOPLEFT", 12, -34)
+    summary:SetPoint("TOPRIGHT", -12, -34)
+    aliasImportOptionsPopup.summary = summary
+
+    local aliasStrategyLabel = W.CreateLabel(
+        aliasImportOptionsPopup, "Duplicate alias names:",
+        PRT.FONT_SIZE, 1, 1, 1)
+    aliasStrategyLabel:SetPoint("TOPLEFT", 12, -94)
+    local aliasStrategy = W.CreateDropdown(
+        aliasImportOptionsPopup, 250, {
+            { text = "Merge into existing alias", value = "merge" },
+            { text = "Keep both (rename import)", value = "rename" },
+            { text = "Skip imported alias", value = "skip" },
+        })
+    aliasStrategy:SetPoint("TOPLEFT", 294, -88)
+    aliasImportOptionsPopup.aliasStrategy = aliasStrategy
+
+    local characterStrategyLabel = W.CreateLabel(
+        aliasImportOptionsPopup,
+        "Character already in another alias:",
+        PRT.FONT_SIZE, 1, 1, 1)
+    characterStrategyLabel:SetPoint("TOPLEFT", 12, -130)
+    local characterStrategy = W.CreateDropdown(
+        aliasImportOptionsPopup, 250, {
+            { text = "Keep in both aliases", value = "keep" },
+            { text = "Skip imported copy", value = "skip" },
+        })
+    characterStrategy:SetPoint("TOPLEFT", 294, -124)
+    aliasImportOptionsPopup.characterStrategy = characterStrategy
+
+    local note = W.CreateDescription(
+        aliasImportOptionsPopup,
+        "Exact duplicates inside one alias are always skipped. Character conflicts use name and realm together.",
+        { width = 536, color = { 0.7, 0.7, 0.7, 1 } })
+    note:SetPoint("TOPLEFT", 12, -160)
+    note:SetPoint("TOPRIGHT", -12, -160)
+
+    local importBtn = W.CreateButton(
+        aliasImportOptionsPopup, "Import", 100, 22)
+    importBtn:SetPoint("BOTTOMLEFT", 12, 10)
+    local cancelBtn = W.CreateButton(
+        aliasImportOptionsPopup, "Cancel", 90, 22)
+    cancelBtn:SetPoint("LEFT", importBtn, "RIGHT", 8, 0)
+    cancelBtn:SetScript("OnClick", function()
+        aliasImportOptionsPopup:Hide()
+    end)
+
+    function aliasImportOptionsPopup:OpenImport(importData, analysis)
+        self._importData = importData
+        self._analysis = analysis
+        self.aliasStrategy:SetSelected(
+            "merge", "Merge into existing alias")
+        self.characterStrategy:SetSelected(
+            "keep", "Keep in both aliases")
+
+        local extra = {}
+        if (analysis.duplicateAliasBlocks or 0) > 0 then
+            extra[#extra + 1] =
+                tostring(analysis.duplicateAliasBlocks)
+                .. " repeated alias blocks merged"
+        end
+        if (analysis.duplicateCharacters or 0) > 0 then
+            extra[#extra + 1] =
+                tostring(analysis.duplicateCharacters)
+                .. " within-alias duplicates collapsed"
+        end
+        local extraText = #extra > 0
+            and (" " .. table.concat(extra, "; ") .. ".") or ""
+        self.summary:SetText(
+            ("Validated %d aliases and %d characters. "
+                .. "%d alias-name conflicts and %d shared-character "
+                .. "conflicts were found.%s"):format(
+                analysis.aliases or 0,
+                analysis.characters or 0,
+                analysis.existingAliasConflicts or 0,
+                analysis.crossAliasCharacterConflicts or 0,
+                extraText))
+
+        W.SetControlEnabled(
+            aliasStrategyLabel,
+            (analysis.existingAliasConflicts or 0) > 0)
+        W.SetControlEnabled(
+            self.aliasStrategy,
+            (analysis.existingAliasConflicts or 0) > 0)
+        W.SetControlEnabled(
+            characterStrategyLabel,
+            (analysis.crossAliasCharacterConflicts or 0) > 0)
+        W.SetControlEnabled(
+            self.characterStrategy,
+            (analysis.crossAliasCharacterConflicts or 0) > 0)
+
+        self:Show()
+        PromotePopup(self, "TOOLTIP")
+    end
+
+    importBtn:SetScript("OnClick", function()
+        local result, err = PRT:ImportRosterAliases(
+            aliasImportOptionsPopup._importData, {
+                aliasStrategy =
+                    aliasImportOptionsPopup.aliasStrategy:GetSelected(),
+                characterStrategy =
+                    aliasImportOptionsPopup.characterStrategy:GetSelected(),
+            })
+        if not result then
+            PRT.Print(err or "Unable to import aliases.")
+            return
+        end
+        aliasImportOptionsPopup:Hide()
+        PRT.Print(FormatAliasImportResult(result))
+        RequestAliasRefresh()
+        RequestMatcherRefresh()
+    end)
+
+    aliasImportPopup._processImport = function(text)
+        local importData, err = PRT:ParseRosterAliasImport(text)
+        if not importData then
+            PRT.Print(err or "Unable to read alias import.")
+            return false
+        end
+        local analysis, analysisErr =
+            PRT:AnalyzeRosterAliasImport(importData)
+        if not analysis then
+            PRT.Print(analysisErr or "Unable to analyze alias import.")
+            return false
+        end
+        aliasImportOptionsPopup:OpenImport(importData, analysis)
+        return true
+    end
+    aliasExportPopup._closeExport = function()
+        return true
+    end
+end
+
 local function GetAliasFilterText()
     if not aliasPopup or not aliasPopup.searchBox then return "" end
     return PRT.Trim(aliasPopup.searchBox:GetText())
@@ -375,12 +876,15 @@ end
 local function EnsureAliasPopup()
     if aliasPopup then return aliasPopup end
     EnsureCommonPopups()
+    EnsureAliasMergePopup()
 
     aliasPopup = W.CreatePopupFrame("PRT_RosterAliasPopup", ALIAS_WIDTH, ALIAS_HEIGHT, {
         title = "Alias Database",
         bgColor = { 0, 0, 0, 1.0 },
     })
-    MakePopupInteractive(aliasPopup, ALIAS_WIDTH, ALIAS_HEIGHT)
+    MakePopupInteractive(
+        aliasPopup, ALIAS_MIN_WIDTH, ALIAS_MIN_HEIGHT)
+    EnsureAliasTransferPopups()
     aliasPopup._refreshGuard = W.CreateDeferredRefreshGuard()
 
     local searchLbl = W.CreateLabel(aliasPopup, "Search", PRT.FONT_SIZE, 1, 1, 1)
@@ -396,9 +900,18 @@ local function EnsureAliasPopup()
     aliasPopup.scroll = scroll
     aliasPopup.blocks = {}
 
-    local addAliasBtn = W.CreateButton(aliasPopup, "+ New Alias", ALIAS_WIDTH - 24, 24)
+    local exportAliasBtn =
+        W.CreateButton(aliasPopup, "Export", 90, 24)
+    exportAliasBtn:SetPoint("BOTTOMRIGHT", -12, 12)
+    local importAliasBtn =
+        W.CreateButton(aliasPopup, "Import", 90, 24)
+    importAliasBtn:SetPoint(
+        "RIGHT", exportAliasBtn, "LEFT", -8, 0)
+    local addAliasBtn =
+        W.CreateButton(aliasPopup, "+ New Alias", 200, 24)
     addAliasBtn:SetPoint("BOTTOMLEFT", 12, 12)
-    addAliasBtn:SetPoint("BOTTOMRIGHT", -12, 12)
+    addAliasBtn:SetPoint(
+        "BOTTOMRIGHT", importAliasBtn, "BOTTOMLEFT", -8, 0)
     addAliasBtn:SetScript("OnClick", function()
         OpenPopupOnTop(aliasNamePopup, {
             title = "New Alias",
@@ -415,6 +928,24 @@ local function EnsureAliasPopup()
                 RequestMatcherRefresh()
                 return true
             end,
+        })
+    end)
+    importAliasBtn:SetScript("OnClick", function()
+        OpenPopupOnTop(aliasImportPopup, {
+            text = "",
+            highlight = false,
+            onAction = aliasImportPopup._processImport,
+        })
+    end)
+    exportAliasBtn:SetScript("OnClick", function()
+        if #PRT:GetRosterAliasList() == 0 then
+            PRT.Print("No aliases to export.")
+            return
+        end
+        OpenPopupOnTop(aliasExportPopup, {
+            text = PRT:ExportRosterAliases(),
+            highlight = true,
+            onAction = aliasExportPopup._closeExport,
         })
     end)
 
@@ -440,6 +971,12 @@ local function EnsureAliasPopup()
         local deleteAliasBtn = W.CreateDeleteButton(block, nil, { width = 24, height = 20 })
         deleteAliasBtn:SetPoint("TOPRIGHT", -10, -8)
         block.deleteAliasBtn = deleteAliasBtn
+
+        local mergeAliasBtn =
+            W.CreateButton(block, "Merge...", 76, 20)
+        mergeAliasBtn:SetPoint(
+            "RIGHT", deleteAliasBtn, "LEFT", -8, 0)
+        block.mergeAliasBtn = mergeAliasBtn
 
         local hdrName = W.CreateLabel(block, "Known Characters", PRT.FONT_SIZE, 1, 1, 1)
         hdrName:SetPoint("TOPLEFT", 18, -40)
@@ -485,9 +1022,10 @@ local function EnsureAliasPopup()
             local aliasId = btn._aliasId
             local alias = PRT:GetAliasById(aliasId)
             if not alias then return end
-            OpenPopupOnTop(matcherConfirmPopup, {
+            OpenPopupOnTop(aliasDeleteConfirmPopup, {
                 title = "Delete Alias",
-                message = "Delete alias '" .. (alias.label or "") .. "' and all stored characters?",
+                message = "Delete '" .. (alias.label or "")
+                    .. "' and its characters?",
                 confirmText = "Delete",
                 onConfirm = function()
                     PRT:DeleteRosterAlias(aliasId)
@@ -497,6 +1035,10 @@ local function EnsureAliasPopup()
                     end
                 end,
             })
+        end)
+
+        block.mergeAliasBtn:SetScript("OnClick", function(btn)
+            aliasMergePopup:OpenForAlias(btn._aliasId)
         end)
 
         block.addCharacterBtn:SetScript("OnClick", function(btn)
@@ -539,6 +1081,7 @@ local function EnsureAliasPopup()
                 block.aliasEdit._originalLabel = alias.label
                 block.aliasEdit:SetText(alias.label or "")
                 block.deleteAliasBtn._aliasId = alias.id
+                block.mergeAliasBtn._aliasId = alias.id
                 block.addCharacterBtn._aliasId = alias.id
 
                 for _, row in ipairs(block.rows) do
@@ -571,9 +1114,10 @@ local function EnsureAliasPopup()
                     row.realm:SetText(character.realm or "")
                     row.deleteBtn:SetScript("OnClick", function()
                         local displayName = PRT:MakeCharacterFullName(character.name, character.realm, true)
-                        OpenPopupOnTop(matcherConfirmPopup, {
+                        OpenPopupOnTop(aliasDeleteConfirmPopup, {
                             title = "Delete Character",
-                            message = "Remove '" .. displayName .. "' from alias '" .. (alias.label or "") .. "'?",
+                            message = "Remove '" .. displayName
+                                .. "' from '" .. (alias.label or "") .. "'?",
                             confirmText = "Delete",
                             onConfirm = function()
                                 PRT:RemoveCharacterFromAlias(alias.id, displayName)
@@ -1049,9 +1593,10 @@ local function RenderTopSection(startY)
         if match.canDeleteAlias and match.alias then
             row.deleteBtn:Show()
             row.deleteBtn:SetScript("OnClick", function()
-                OpenPopupOnTop(matcherConfirmPopup, {
+                OpenPopupOnTop(aliasDeleteConfirmPopup, {
                     title = "Delete Alias",
-                    message = "Delete alias '" .. (match.alias.label or "") .. "' and all stored characters?",
+                    message = "Delete '" .. (match.alias.label or "")
+                        .. "' and its characters?",
                     confirmText = "Delete",
                     onConfirm = function()
                         PRT:DeleteRosterAlias(match.alias.id)

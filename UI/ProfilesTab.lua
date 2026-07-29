@@ -259,6 +259,19 @@ function PRT:BuildProfilesTab()
         end)
     floatTextMode:SetPoint("TOPLEFT", 2, -266)
 
+    local floatButtonTextLabel = W.CreateLabel(
+        floatContent, "Main Button Text:",
+        PRT.FONT_SIZE, 0.8, 0.8, 0.8)
+    floatButtonTextLabel:SetPoint("TOPLEFT", 292, -248)
+    local floatButtonTextMode = W.CreateDropdown(floatContent, 210, {
+        { text = "Profile: ProfileName", value = "full" },
+        { text = "P: ProfileName:", value = "short" },
+        { text = "ProfileName", value = "name" },
+    }, function(value)
+        PRT:SetProfileFloatButtonTextMode(value)
+    end)
+    floatButtonTextMode:SetPoint("TOPLEFT", 292, -266)
+
     local notificationHeader = W.CreateHeader(floatContent, "Profile Change Notification")
     notificationHeader:SetPoint("TOPLEFT", 2, -310)
     local notificationDescription = W.CreateDescription(floatContent,
@@ -464,6 +477,8 @@ function PRT:BuildProfilesTab()
         floatFontSize:SetExactValue(db.profileFloat.fontSize or PRT.FONT_SIZE)
         floatOpacity:SetExactValue(db.profileFloat.bgAlpha or 0.92)
         floatTextMode:SetSelected(db.profileFloat.textMode or "truncate")
+        floatButtonTextMode:SetSelected(
+            PRT:GetProfileFloatButtonTextMode())
         notificationEnabled:SetChecked(db.profileFloat.notificationEnabled ~= false)
         notificationSound:SetChecked(db.profileFloat.notificationSound ~= false)
         notificationX:SetExactValue(db.profileFloat.notificationX or 0)

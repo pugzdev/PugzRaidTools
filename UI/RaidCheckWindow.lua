@@ -113,6 +113,97 @@ local function ColumnWidth(column)
     return tonumber(column and column.width) or DEFAULT_COLUMN_WIDTH
 end
 
+local REPORTABLE_COLUMNS = {
+    worldBuffs = true,
+    attackPower = true,
+    disallowed = true,
+    flask = true,
+    zanza = true,
+    potions = true,
+    consumes = true,
+    stamina = true,
+    druid = true,
+    intellect = true,
+    spirit = true,
+    shadow = true,
+    kings = true,
+    might = true,
+    wisdom = true,
+    salvation = true,
+    light = true,
+    durability = true,
+}
+
+local function ShiftIsDown()
+    return IsShiftKeyDown and IsShiftKeyDown() or false
+end
+
+local function SendColumnClick(
+        popup, column, member, button, aura)
+    if button ~= "LeftButton" or not popup or not popup.snapshot then
+        return
+    end
+    local columnKey = column and column.key or "player"
+    if columnKey ~= "player"
+        and not REPORTABLE_COLUMNS[columnKey] then
+        return
+    end
+    if columnKey == "potions" and not aura then
+        return
+    end
+    PRT:SendRaidCheckClickReport(
+        columnKey,
+        popup.snapshot,
+        {
+            shift = ShiftIsDown(),
+            member = member,
+            spellId = aura and aura.spellId,
+        })
+end
+
+local function ColumnClickHints(column, member)
+    if not column or not REPORTABLE_COLUMNS[column.key] then
+        return {}
+    end
+    if column.key == "potions" then
+        return {
+            "Left-click a displayed potion icon to report that potion.",
+        }
+    elseif column.key == "worldBuffs" then
+        return {
+            "Left-click to report active World Buffs.",
+            "Shift-left-click to report one-hour World Buffs.",
+        }
+    elseif column.key == "attackPower" then
+        return {
+            "Left-click to report the Battle Shout count.",
+            "Shift-left-click to list players with Battle Shout.",
+        }
+    elseif column.buffKey then
+        if member then
+            return {
+                "Left-click to report the raid's buff status.",
+                "Shift-left-click to report this player's buff status.",
+            }
+        end
+        return {
+            "Left-click to report the raid's buff status.",
+            "Shift-left-click a player's cell for their status.",
+        }
+    end
+    return {
+        "Left-click to report this column to group chat.",
+    }
+end
+
+local function AppendClickHints(lines, column, member)
+    lines = lines or {}
+    for _, hint in ipairs(ColumnClickHints(column, member)) do
+        lines[#lines + 1] = { hint, 0.35, 1, 0.7, true }
+    end
+    return lines
+end
+
 local function NormalizeAlignment(value)
     if value == "LEFT" or value == "RIGHT" then return value end
     return "CENTER"
@@ -137,6 +228,10 @@ local function CreateHeaderCell(parent)
         anchor = "ANCHOR_TOP",
         getLines = function() return cell._tooltipLines or {} end,
     })
+    cell:HookScript("OnMouseUp", function(self, button)
+        SendColumnClick(
+            self._popup, self._column, nil, button)
+    end)
     cell:Hide()
     return cell
 end
@@ -185,6 +280,13 @@ local function CreateResultCell(parent)
         anchor = "ANCHOR_TOP",
         getLines = function() return cell._tooltipLines or {} end,
     })
+    cell:HookScript("OnMouseUp", function(self, button)
+        SendColumnClick(
+            self._popup,
+            self._column,
+            self._member,
+            button)
+    end)
     return cell
 end
 
@@ -202,6 +304,35 @@ local function EnsureIconSlot(cell, index)
     slot.glow:SetVertexColor(1, 0.05, 0.05, 1)
     slot.glow:Hide()
 
+    slot.hit = CreateFrame("Button", nil, cell)
+    slot.hit:SetPoint("TOPLEFT", slot.icon, "TOPLEFT")
+    slot.hit:SetPoint("BOTTOMRIGHT", slot.icon, "BOTTOMRIGHT")
+    slot.hit:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    slot.hit:SetFrameLevel((cell:GetFrameLevel() or 1) + 3)
+    slot.hit:SetScript("OnClick", function(_, button)
+        if button == "RightButton" then
+            local popup = cell._popup
+            local cfg = PRT:GetDB().raidCheck or {}
+            if popup and cfg.dismissOnRightClick ~= false then
+                popup:Hide()
+            end
+            return
+        end
+        SendColumnClick(
+            cell._popup,
+            slot._column,
+            cell._member,
+            button,
+            slot._aura)
+    end)
+    W.AttachTooltip(slot.hit, {
+        anchor = "ANCHOR_TOP",
+        getLines = function()
+            return slot._tooltipLines or {}
+        end,
+    })
+    slot.hit:Hide()
+
     cell.iconSlots[index] = slot
     return slot
 end
@@ -210,6 +341,10 @@ local function HideCellIcons(cell)
     for _, slot in ipairs(cell.iconSlots) do
         slot.icon:Hide()
         slot.glow:Hide()
+        slot.hit:Hide()
+        slot._aura = nil
+        slot._column = nil
+        slot._tooltipLines = nil
     end
 end
 
@@ -367,6 +502,18 @@ local function ShowAuraIcon(slot, aura, column, glow, uncountedMode)
     end
     slot.icon:Show()
     slot.glow:SetShown(glow == true)
+    slot._aura = aura
+    slot._column = column
+    slot._tooltipLines = AuraTooltip(column, aura)
+    if column.key == "potions" then
+        slot._tooltipLines[#slot._tooltipLines + 1] = {
+            "Left-click to report this potion to group chat.",
+            0.35, 1, 0.7, true,
+        }
+        slot.hit:Show()
+    else
+        slot.hit:Hide()
+    end
 end
 
 local function UpdateCategoryCell(
@@ -563,6 +710,10 @@ local function CreateResultRow(parent)
             }
         end,
     })
+    row:HookScript("OnMouseUp", function(self, button)
+        SendColumnClick(
+            self._popup, nil, self.member, button)
+    end)
     row:Hide()
     return row
 end
@@ -599,12 +750,18 @@ local function UpdateResultRow(
         local column = columns[columnIndex]
         local layout = columnLayout[columnIndex]
         if column and layout then
+            cell._column = column
+            cell._member = member
             cell:ClearAllPoints()
             cell:SetPoint("LEFT", layout.x, 0)
             UpdateResultCell(
                 cell, member, column, rowHeight, layout.width)
+            cell._tooltipLines = AppendClickHints(
+                cell._tooltipLines, column, member)
             cell:Show()
         else
+            cell._column = nil
+            cell._member = nil
             cell:Hide()
         end
     end
@@ -626,6 +783,11 @@ local function CreateMiniMember(parent)
     memberFrame.nameLabel:SetJustifyH("LEFT")
     memberFrame.nameLabel:SetFont(
         PRT.FONT, math.max(8, PRT.FONT_SIZE - 2), "OUTLINE")
+    memberFrame:EnableMouse(true)
+    memberFrame:HookScript("OnMouseUp", function(self, button)
+        SendColumnClick(
+            self._popup, nil, self._member, button)
+    end)
     memberFrame:Hide()
     return memberFrame
 end
@@ -635,6 +797,7 @@ local function UpdateMiniMembers(popup, members)
     for index, mini in ipairs(popup.miniMembers) do
         local member = members[index]
         if member then
+            mini._member = member
             local column = (index - 1) % MINI_COLUMNS
             local row = math.floor((index - 1) / MINI_COLUMNS)
             mini:ClearAllPoints()
@@ -651,6 +814,7 @@ local function UpdateMiniMembers(popup, members)
             mini.readyIcon:SetShown(readyTexture ~= nil)
             mini:Show()
         else
+            mini._member = nil
             mini:SetAlpha(1)
             mini:Hide()
         end
@@ -796,6 +960,7 @@ local function ApplyWindowMode(popup, snapshot, columns)
         local column = columns[index]
         local layout = columnLayout[index]
         if column and layout then
+            header._column = column
             header:ClearAllPoints()
             header:SetPoint("LEFT", layout.x, 0)
             header:SetWidth(layout.width)
@@ -819,8 +984,11 @@ local function ApplyWindowMode(popup, snapshot, columns)
                     details, 0.72, 0.72, 0.72,
                 }
             end
+            header._tooltipLines = AppendClickHints(
+                header._tooltipLines, column, nil)
             header:Show()
         else
+            header._column = nil
             header:Hide()
         end
     end
@@ -837,6 +1005,10 @@ local function ApplyWindowMode(popup, snapshot, columns)
                 index)
         else
             row.member = nil
+            for _, cell in ipairs(row.cells) do
+                cell._column = nil
+                cell._member = nil
+            end
             row:Hide()
         end
     end
@@ -933,9 +1105,36 @@ local function CreateRaidCheckWindow()
     popup.playerHeader:SetPoint("LEFT", 7, 0)
     popup.playerHeader:SetJustifyH("LEFT")
 
+    popup.playerHeaderHit =
+        CreateFrame("Button", nil, popup.columnHeader)
+    popup.playerHeaderHit:SetPoint("TOPLEFT")
+    popup.playerHeaderHit:SetSize(
+        NAME_WIDTH, COLUMN_HEADER_HEIGHT)
+    popup.playerHeaderHit:RegisterForClicks(
+        "LeftButtonUp", "RightButtonUp")
+    popup.playerHeaderHit:SetFrameLevel(
+        (popup.columnHeader:GetFrameLevel() or 1) + 3)
+    popup.playerHeaderHit:SetScript("OnClick", function(_, button)
+        SendColumnClick(popup, nil, nil, button)
+    end)
+    W.AttachTooltip(popup.playerHeaderHit, {
+        anchor = "ANCHOR_TOP",
+        getLines = function()
+            return {
+                { "Player List", 1, 1, 1 },
+                {
+                    "Left-click to report ready-check responses.",
+                    0.35, 1, 0.7, true,
+                },
+            }
+        end,
+    })
+    AttachRightClickDismiss(popup.playerHeaderHit, popup)
+
     popup.headerCells = {}
     for index = 1, MAX_COLUMNS do
         popup.headerCells[index] = CreateHeaderCell(popup.columnHeader)
+        popup.headerCells[index]._popup = popup
         AttachRightClickDismiss(popup.headerCells[index], popup)
     end
 
@@ -948,8 +1147,10 @@ local function CreateRaidCheckWindow()
     popup.rows = {}
     for index = 1, MAX_ROWS do
         popup.rows[index] = CreateResultRow(popup.body)
+        popup.rows[index]._popup = popup
         AttachRightClickDismiss(popup.rows[index], popup)
         for _, cell in ipairs(popup.rows[index].cells) do
+            cell._popup = popup
             AttachRightClickDismiss(cell, popup)
         end
     end
@@ -960,7 +1161,7 @@ local function CreateRaidCheckWindow()
     popup.miniMembers = {}
     for index = 1, MAX_ROWS do
         popup.miniMembers[index] = CreateMiniMember(popup.minimized)
-        popup.miniMembers[index]:EnableMouse(true)
+        popup.miniMembers[index]._popup = popup
         AttachRightClickDismiss(popup.miniMembers[index], popup)
     end
 

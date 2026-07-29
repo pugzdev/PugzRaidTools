@@ -35,6 +35,12 @@ local CLASS_OPTIONS = {
     "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST",
     "SHAMAN", "MAGE", "WARLOCK", "DRUID",
 }
+local CLASS_OPTION_SET = {}
+for _, classFile in ipairs(CLASS_OPTIONS) do
+    CLASS_OPTION_SET[classFile] = true
+end
+
+local ALIAS_TRANSFER_HEADER = "[PRT Alias Database v2]"
 
 local function EnsureMatcherDB()
     local db = PRT:GetDB()
@@ -246,6 +252,97 @@ local function SortAliasCharacters(alias)
         end
         return a.realmNorm < b.realmNorm
     end)
+end
+
+local function EncodeAliasTransferValue(value)
+    return (tostring(value or "")
+        :gsub("%%", "%%25")
+        :gsub("|", "%%7C")
+        :gsub(",", "%%2C")
+        :gsub("\r", "%%0D")
+        :gsub("\n", "%%0A"))
+end
+
+local function DecodeAliasTransferValue(value)
+    return (tostring(value or ""):gsub("%%(%x%x)", function(hex)
+        return string.char(tonumber(hex, 16))
+    end))
+end
+
+local function SplitAliasTransferFields(value, separator)
+    local fields = {}
+    local text = tostring(value or "")
+    local startAt = 1
+    while true do
+        local splitAt = text:find(separator, startAt, true)
+        if not splitAt then
+            fields[#fields + 1] =
+                DecodeAliasTransferValue(text:sub(startAt))
+            break
+        end
+        fields[#fields + 1] =
+            DecodeAliasTransferValue(
+                text:sub(startAt, splitAt - 1))
+        startAt = splitAt + #separator
+    end
+    return fields
+end
+
+local function AliasTransferCharacterKey(character)
+    local baseNorm = NormalizeName(character and character.name or "")
+    local realmNorm = NormalizeRealm(character and character.realm or "")
+    return MakeFullNorm(baseNorm, realmNorm)
+end
+
+local function AliasHasCharacterKey(alias, characterKey)
+    for _, character in ipairs(alias and alias.characters or {}) do
+        if character.fullNorm == characterKey
+            or AliasTransferCharacterKey(character) == characterKey then
+            return character
+        end
+    end
+end
+
+local function AddParsedAlias(importData, aliasData)
+    aliasData.label = PRT.Trim(aliasData.label or "")
+    if aliasData.label == "" then
+        return false, "Alias name is required."
+    end
+
+    local labelNorm = NormalizeName(aliasData.label)
+    if labelNorm == "" then
+        return false, "Alias name is invalid."
+    end
+
+    local destination = importData._aliasByLabel[labelNorm]
+    if destination then
+        importData.duplicateAliasBlocks =
+            importData.duplicateAliasBlocks + 1
+    else
+        destination = {
+            label = aliasData.label,
+            characters = {},
+            _characterKeys = {},
+        }
+        importData.aliases[#importData.aliases + 1] = destination
+        importData._aliasByLabel[labelNorm] = destination
+    end
+
+    for _, character in ipairs(aliasData.characters or {}) do
+        local key = AliasTransferCharacterKey(character)
+        local existing = destination._characterKeys[key]
+        if existing then
+            importData.duplicateCharacters =
+                importData.duplicateCharacters + 1
+            if existing.classFile == "" and character.classFile ~= "" then
+                existing.classFile = character.classFile
+            end
+        else
+            destination.characters[#destination.characters + 1] = character
+            destination._characterKeys[key] = character
+        end
+    end
+    return true
 end
 
 local function FindAliasImportHits(importEntry)
@@ -546,6 +643,64 @@ function PRT:DeleteRosterAlias(aliasId)
     return false, "Alias not found."
 end
 
+function PRT:MergeRosterAliases(sourceAliasId, destinationAliasId)
+    if not sourceAliasId or not destinationAliasId then
+        return nil, "Both aliases are required."
+    end
+    if sourceAliasId == destinationAliasId then
+        return nil, "Choose a different alias to merge into."
+    end
+
+    local source = self:GetAliasById(sourceAliasId)
+    if not source then
+        return nil, "Source alias not found."
+    end
+    local destination = self:GetAliasById(destinationAliasId)
+    if not destination then
+        return nil, "Destination alias not found."
+    end
+
+    local result = {
+        sourceLabel = source.label,
+        destinationLabel = destination.label,
+        charactersAdded = 0,
+        charactersSkippedDuplicate = 0,
+    }
+
+    for _, character in ipairs(source.characters or {}) do
+        local duplicate = false
+        for _, existing in ipairs(destination.characters or {}) do
+            if existing.fullNorm == character.fullNorm then
+                duplicate = true
+                break
+            end
+        end
+
+        local merged, err = self:AddCharacterToAlias(destination.id, {
+            name = character.name,
+            realm = character.realm,
+            classFile = character.classFile,
+        })
+        if not merged then
+            return nil, err or "Unable to merge alias characters."
+        end
+
+        if duplicate then
+            result.charactersSkippedDuplicate =
+                result.charactersSkippedDuplicate + 1
+        else
+            result.charactersAdded = result.charactersAdded + 1
+        end
+    end
+
+    local deleted, err = self:DeleteRosterAlias(source.id)
+    if not deleted then
+        return nil, err or "Unable to remove the merged alias."
+    end
+
+    return result
+end
+
 function PRT:AddCharacterToAlias(aliasId, characterInfo)
     local alias = self:GetAliasById(aliasId)
     if not alias then
@@ -624,6 +779,323 @@ end
 function PRT:GetRosterAliasList()
     RefreshAliasCache()
     return EnsureMatcherDB().aliases
+end
+
+function PRT:ExportRosterAliases()
+    RefreshAliasCache()
+    local lines = { ALIAS_TRANSFER_HEADER }
+    for _, alias in ipairs(EnsureMatcherDB().aliases) do
+        lines[#lines + 1] = "[Alias]"
+        lines[#lines + 1] =
+            "name=" .. EncodeAliasTransferValue(alias.label)
+        for _, character in ipairs(alias.characters or {}) do
+            lines[#lines + 1] = "character="
+                .. EncodeAliasTransferValue(character.name) .. ","
+                .. EncodeAliasTransferValue(character.realm) .. ","
+                .. EncodeAliasTransferValue(character.classFile)
+        end
+        lines[#lines + 1] = "[/Alias]"
+    end
+    return table.concat(lines, "\n")
+end
+
+function PRT:ParseRosterAliasImport(raw)
+    raw = tostring(raw or "")
+    raw = raw:gsub("\r\n", "\n"):gsub("\r", "\n")
+    if PRT.Trim(raw) == "" then
+        return nil, "Nothing to import."
+    end
+
+    local importData = {
+        aliases = {},
+        duplicateAliasBlocks = 0,
+        duplicateCharacters = 0,
+        _aliasByLabel = {},
+    }
+    local current
+    local headerSeen = false
+    local lineNumber = 0
+
+    local function ParseError(message)
+        return nil, ("Alias import line %d: %s"):format(
+            lineNumber, message)
+    end
+
+    for rawLine in (raw .. "\n"):gmatch("(.-)\n") do
+        lineNumber = lineNumber + 1
+        local line = PRT.Trim(rawLine)
+        if line ~= "" then
+            if not headerSeen then
+                if line == ALIAS_TRANSFER_HEADER then
+                else
+                    return ParseError(
+                        "expected " .. ALIAS_TRANSFER_HEADER .. ".")
+                end
+                headerSeen = true
+            elseif line == "[Alias]" then
+                if current then
+                    return ParseError("nested [Alias] block.")
+                end
+                current = { label = "", characters = {} }
+            elseif line == "[/Alias]" then
+                if not current then
+                    return ParseError("[/Alias] without [Alias].")
+                end
+                local ok, err = AddParsedAlias(importData, current)
+                if not ok then return ParseError(err) end
+                current = nil
+            elseif not current then
+                return ParseError("content outside an [Alias] block.")
+            else
+                local encodedName = line:match("^name=(.*)$")
+                local encodedCharacter = line:match("^character=(.*)$")
+                if encodedName then
+                    if current.label ~= "" then
+                        return ParseError("alias has more than one name.")
+                    end
+                    current.label =
+                        PRT.Trim(DecodeAliasTransferValue(encodedName))
+                elseif encodedCharacter then
+                    local fields =
+                        SplitAliasTransferFields(
+                            encodedCharacter, ",")
+                    if #fields ~= 3 then
+                        return ParseError(
+                            "character requires name, realm, and class.")
+                    end
+                    local name = PRT.Trim(fields[1])
+                    if name == "" then
+                        return ParseError("character name is required.")
+                    end
+                    local realm = PRT.Trim(fields[2])
+                    if realm == "" then
+                        realm = self:GetHomeRealmName()
+                    end
+                    local classFile =
+                        string.upper(PRT.Trim(fields[3]))
+                    if classFile ~= ""
+                        and not CLASS_OPTION_SET[classFile] then
+                        return ParseError(
+                            "unknown class " .. classFile .. ".")
+                    end
+                    current.characters[#current.characters + 1] = {
+                        name = name,
+                        realm = realm,
+                        classFile = classFile,
+                    }
+                else
+                    return ParseError("unknown field.")
+                end
+            end
+        end
+    end
+
+    if not headerSeen then
+        return nil, "Alias import header is missing."
+    end
+    if current then
+        return nil, "Alias import has an unclosed [Alias] block."
+    end
+    if #importData.aliases == 0 then
+        return nil, "Alias import contains no aliases."
+    end
+
+    for _, alias in ipairs(importData.aliases) do
+        alias._characterKeys = nil
+    end
+    importData._aliasByLabel = nil
+    return importData
+end
+
+function PRT:AnalyzeRosterAliasImport(importData)
+    if type(importData) ~= "table"
+        or type(importData.aliases) ~= "table" then
+        return nil, "Invalid alias import data."
+    end
+
+    RefreshAliasCache()
+    local analysis = {
+        aliases = #importData.aliases,
+        characters = 0,
+        existingAliasConflicts = 0,
+        sameAliasCharacterDuplicates = 0,
+        crossAliasCharacterConflicts = 0,
+        duplicateAliasBlocks =
+            tonumber(importData.duplicateAliasBlocks) or 0,
+        duplicateCharacters =
+            tonumber(importData.duplicateCharacters) or 0,
+    }
+    local existingByLabel = {}
+    local memberships = {}
+
+    for _, alias in ipairs(EnsureMatcherDB().aliases) do
+        existingByLabel[alias._labelNorm] = alias
+        for _, character in ipairs(alias.characters or {}) do
+            local key = character.fullNorm
+                or AliasTransferCharacterKey(character)
+            memberships[key] = memberships[key] or {}
+            memberships[key][#memberships[key] + 1] = alias
+        end
+    end
+
+    local importedMemberships = {}
+    for _, importedAlias in ipairs(importData.aliases) do
+        local labelNorm = NormalizeName(importedAlias.label)
+        local existingAlias = existingByLabel[labelNorm]
+        if existingAlias then
+            analysis.existingAliasConflicts =
+                analysis.existingAliasConflicts + 1
+        end
+
+        for _, character in ipairs(importedAlias.characters or {}) do
+            analysis.characters = analysis.characters + 1
+            local key = AliasTransferCharacterKey(character)
+            local sameAliasDuplicate = existingAlias
+                and AliasHasCharacterKey(existingAlias, key)
+            if sameAliasDuplicate then
+                analysis.sameAliasCharacterDuplicates =
+                    analysis.sameAliasCharacterDuplicates + 1
+            end
+
+            local crossAlias = false
+            for _, memberAlias in ipairs(memberships[key] or {}) do
+                if not existingAlias
+                    or memberAlias.id ~= existingAlias.id then
+                    crossAlias = true
+                    break
+                end
+            end
+            local importedLabel = importedMemberships[key]
+            if importedLabel and importedLabel ~= labelNorm then
+                crossAlias = true
+            end
+            if crossAlias then
+                analysis.crossAliasCharacterConflicts =
+                    analysis.crossAliasCharacterConflicts + 1
+            end
+            importedMemberships[key] =
+                importedMemberships[key] or labelNorm
+        end
+    end
+
+    return analysis
+end
+
+local function MakeUniqueImportedAliasLabel(label)
+    local base = PRT.Trim(label or "") .. " (Imported)"
+    local candidate = base
+    local suffix = 2
+    while PRT:GetAliasByLabel(candidate) do
+        candidate = base .. " " .. tostring(suffix)
+        suffix = suffix + 1
+    end
+    return candidate
+end
+
+local function CharacterExistsOutsideAlias(aliasId, characterKey)
+    RefreshAliasCache()
+    for _, alias in ipairs(EnsureMatcherDB().aliases) do
+        if alias.id ~= aliasId
+            and AliasHasCharacterKey(alias, characterKey) then
+            return true
+        end
+    end
+    return false
+end
+
+function PRT:ImportRosterAliases(importData, options)
+    if type(importData) == "string" then
+        local parsed, err = self:ParseRosterAliasImport(importData)
+        if not parsed then return nil, err end
+        importData = parsed
+    end
+    if type(importData) ~= "table"
+        or type(importData.aliases) ~= "table" then
+        return nil, "Invalid alias import data."
+    end
+
+    options = options or {}
+    local aliasStrategy = options.aliasStrategy or "merge"
+    local characterStrategy = options.characterStrategy or "keep"
+    if aliasStrategy ~= "merge"
+        and aliasStrategy ~= "rename"
+        and aliasStrategy ~= "skip" then
+        return nil, "Invalid duplicate-alias strategy."
+    end
+    if characterStrategy ~= "keep"
+        and characterStrategy ~= "skip" then
+        return nil, "Invalid shared-character strategy."
+    end
+
+    local result = {
+        aliasesCreated = 0,
+        aliasesMerged = 0,
+        aliasesRenamed = 0,
+        aliasesSkipped = 0,
+        charactersAdded = 0,
+        charactersSkippedDuplicate = 0,
+        charactersSkippedConflict = 0,
+        charactersSkippedAlias = 0,
+    }
+
+    for _, importedAlias in ipairs(importData.aliases) do
+        local destination = self:GetAliasByLabel(importedAlias.label)
+        local skipImportedAlias = false
+        if destination then
+            if aliasStrategy == "skip" then
+                skipImportedAlias = true
+                result.aliasesSkipped = result.aliasesSkipped + 1
+                result.charactersSkippedAlias =
+                    result.charactersSkippedAlias
+                    + #(importedAlias.characters or {})
+            elseif aliasStrategy == "rename" then
+                local renamedLabel =
+                    MakeUniqueImportedAliasLabel(importedAlias.label)
+                destination = self:CreateRosterAlias(renamedLabel)
+                if not destination then
+                    return nil, "Unable to create imported alias."
+                end
+                result.aliasesCreated = result.aliasesCreated + 1
+                result.aliasesRenamed = result.aliasesRenamed + 1
+            else
+                result.aliasesMerged = result.aliasesMerged + 1
+            end
+        else
+            destination = self:CreateRosterAlias(importedAlias.label)
+            if not destination then
+                return nil, "Unable to create imported alias."
+            end
+            result.aliasesCreated = result.aliasesCreated + 1
+        end
+
+        if destination and not skipImportedAlias then
+            for _, character in ipairs(
+                    importedAlias.characters or {}) do
+                local key = AliasTransferCharacterKey(character)
+                local duplicate =
+                    AliasHasCharacterKey(destination, key)
+                if duplicate then
+                    self:AddCharacterToAlias(
+                        destination.id, character)
+                    result.charactersSkippedDuplicate =
+                        result.charactersSkippedDuplicate + 1
+                elseif characterStrategy == "skip"
+                    and CharacterExistsOutsideAlias(
+                        destination.id, key) then
+                    result.charactersSkippedConflict =
+                        result.charactersSkippedConflict + 1
+                else
+                    local added, err = self:AddCharacterToAlias(
+                        destination.id, character)
+                    if not added then return nil, err end
+                    result.charactersAdded =
+                        result.charactersAdded + 1
+                end
+            end
+        end
+    end
+
+    return result
 end
 
 function PRT:SaveCharacterToAliasLabel(aliasLabel, liveEntry)

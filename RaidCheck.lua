@@ -1151,6 +1151,16 @@ function PRT:GetRaidCheckMembers()
         AddMember(members, "player", nil, nil, 2, 1,
             UnitLevel and UnitLevel("player") or 0, className, classFile)
     end
+
+    -- Capture each player's slot inside their subgroup before display sorting
+    -- changes the snapshot order. Click reports can then give an exact
+    -- Group/Slot location regardless of the user's selected row sort.
+    local groupCounts = {}
+    for _, member in ipairs(members) do
+        local subgroup = tonumber(member.subgroup) or 1
+        groupCounts[subgroup] = (groupCounts[subgroup] or 0) + 1
+        member.groupSlot = groupCounts[subgroup]
+    end
     return members
 end
 
@@ -1181,6 +1191,16 @@ local function MarkBuff(buffState, mapped, aura)
         aura.raidCheckDisplayIcon = match.displayIcon
             or ResolveSpellIcon(aura.spellId, aura.icon)
         buffState[match.key] = aura
+    end
+end
+
+local function AnnotateAuraSource(owner, aura)
+    local sourceUnit = aura and aura.sourceUnit
+    if not sourceUnit or IsSecret(sourceUnit) then return end
+    local sourceName, sourceRealm = owner:GetUnitIdentity(sourceUnit)
+    if sourceName and sourceName ~= "" then
+        aura.raidCheckSourceName = owner:MakeCharacterFullName(
+            sourceName, sourceRealm, false)
     end
 end
 
@@ -1236,6 +1256,7 @@ function PRT:ScanRaidCheckMember(member, spellToBuff)
             local aura = GetAuraData(member.unit, index)
             if not aura then break end
             if not IsSecret(aura.spellId) and not IsSecret(aura.icon) then
+                AnnotateAuraSource(self, aura)
                 local spellId = tonumber(aura.spellId)
                 local icon = tonumber(aura.icon)
                 if not result.food
@@ -1514,6 +1535,7 @@ function PRT:BuildRaidCheckTestSnapshot()
             unit = "preview" .. index,
             raidIndex = index,
             subgroup = math.ceil(index / 5),
+            groupSlot = ((index - 1) % 5) + 1,
             level = 60,
             className = classFile,
             classFile = classFile,
@@ -1872,6 +1894,11 @@ local RAID_CHECK_CHAT_COMMANDS = {
         description = "Players with Supercharged Chronoboon active.",
     },
     {
+        key = "disallowed",
+        aliases = { "!logs", "!disallowed", "!banned", "!invalid" },
+        description = "Detected Logs! auras and affected players.",
+    },
+    {
         key = "battleShout",
         aliases = { "!bs", "!bshout", "!battleshout" },
         description = "Eligible players with Diamond Flask Battle Shout.",
@@ -1992,6 +2019,41 @@ local MANA_BUFF_CLASSES = {
     SHAMAN = true,
     MAGE = true,
     PALADIN = true,
+}
+local CLICK_BUFF_REPORTS = {
+    stamina = {
+        label = "Fortitude",
+    },
+    druid = {
+        label = "Mark / Gift of the Wild",
+    },
+    intellect = {
+        label = "Arcane Intellect / Brilliance",
+        classes = MANA_BUFF_CLASSES,
+    },
+    spirit = {
+        label = "Divine Spirit / Prayer of Spirit",
+        classes = MANA_BUFF_CLASSES,
+    },
+    shadow = {
+        label = "Shadow Protection",
+    },
+    kings = {
+        label = "Blessing of Kings",
+    },
+    might = {
+        label = "Blessing of Might",
+    },
+    wisdom = {
+        label = "Blessing of Wisdom",
+        classes = MANA_BUFF_CLASSES,
+    },
+    salvation = {
+        label = "Blessing of Salvation",
+    },
+    light = {
+        label = "Blessing of Light",
+    },
 }
 local BUFF_CHAT_COMMANDS = {
     fortitude = {
@@ -2221,6 +2283,46 @@ local function DurabilitySummary(snapshot)
     return lines
 end
 
+local function DisallowedSummary(members)
+    local affected = {}
+    local foundBySpell = {}
+    local detections = 0
+
+    for _, member in ipairs(members or {}) do
+        local memberFound = false
+        for _, aura in ipairs(member.disallowed or {}) do
+            local spellId = tonumber(aura.spellId)
+            if DISALLOWED_AURAS[spellId] then
+                foundBySpell[spellId] = foundBySpell[spellId] or {}
+                foundBySpell[spellId][#foundBySpell[spellId] + 1] = member
+                detections = detections + 1
+                memberFound = true
+            end
+        end
+        if memberFound then affected[#affected + 1] = member end
+    end
+
+    if detections == 0 then
+        return { "Logs! - no disallowed auras found." }
+    end
+
+    local lines = {
+        ("Logs! - %d disallowed aura%s found on %d/%d players."):format(
+            detections,
+            detections == 1 and "" or "s",
+            #affected,
+            #(members or {})),
+    }
+    for _, definition in ipairs(DISALLOWED_AURA_DEFINITIONS) do
+        local found = foundBySpell[definition.spellId]
+        if found and #found > 0 then
+            lines[#lines + 1] = definition.name .. " - "
+                .. table.concat(SortedNames(found), ", ") .. "."
+        end
+    end
+    return lines
+end
+
 local function BuildRaidCheckChatCommandBody(command, snapshot)
     local members = snapshot.members or {}
     if #members == 0 then return { "No group members found." } end
@@ -2256,6 +2358,8 @@ local function BuildRaidCheckChatCommandBody(command, snapshot)
             ("Chronoboon - %d/%d players have Supercharged Chronoboon "
                 .. "Displacer active."):format(covered, #members),
         }
+    elseif key == "disallowed" then
+        return DisallowedSummary(members)
     elseif key == "battleShout" then
         local eligible = EligibleMembers(snapshot, BATTLE_SHOUT_CLASSES)
         local covered = 0
@@ -2298,9 +2402,10 @@ local function BuildRaidCheckChatCommandBody(command, snapshot)
     return {}
 end
 
-local function PrefixAndSplitChatLines(lines)
+local function PrefixAndSplitChatLines(lines, prefix)
     local result = {}
-    local maximumBody = RAID_CHECK_CHAT_LIMIT - #RAID_CHECK_CHAT_PREFIX
+    prefix = prefix or RAID_CHECK_CHAT_PREFIX
+    local maximumBody = RAID_CHECK_CHAT_LIMIT - #prefix
     for _, rawLine in ipairs(lines or {}) do
         local remaining = tostring(rawLine or ""):gsub("^%s+", ""):gsub("%s+$", "")
         if remaining == "" then remaining = "No results." end
@@ -2315,12 +2420,426 @@ local function PrefixAndSplitChatLines(lines)
                 nextStart = splitAt + 1
             end
             local segment = remaining:sub(1, splitAt - 1):gsub("%s+$", "")
-            result[#result + 1] = RAID_CHECK_CHAT_PREFIX .. segment
+            result[#result + 1] = prefix .. segment
             remaining = remaining:sub(nextStart):gsub("^%s+", "")
         end
-        result[#result + 1] = RAID_CHECK_CHAT_PREFIX .. remaining
+        result[#result + 1] = prefix .. remaining
     end
     return result
+end
+
+---------------------------------------------------------------------------
+-- Click reports from the compact Raid Check window
+---------------------------------------------------------------------------
+local RAID_CHECK_CLICK_REPORT_PREFIX = "PRT - "
+
+local function MembersMatching(members, predicate)
+    local result = {}
+    for _, member in ipairs(members or {}) do
+        if predicate(member) then
+            result[#result + 1] = member
+        end
+    end
+    return result
+end
+
+local function NameListLine(label, members)
+    local names = SortedNames(members)
+    return label .. ": "
+        .. (#names > 0 and table.concat(names, ", ") or "None")
+        .. "."
+end
+
+local function MemberClassLabel(member)
+    local className = tostring(member and member.className or "")
+    local classFile = tostring(member and member.classFile or "")
+    if className ~= "" and className ~= classFile then
+        return className
+    end
+    if classFile == "" then return "Unknown class" end
+    local lower = string.lower(classFile)
+    return string.upper(lower:sub(1, 1)) .. lower:sub(2)
+end
+
+local function MemberGroupSlot(snapshot, target)
+    local saved = tonumber(target and target.groupSlot)
+    if saved and saved > 0 then return saved end
+
+    local subgroup = tonumber(target and target.subgroup) or 1
+    local raidIndex = tonumber(target and target.raidIndex)
+    local slot = 0
+    for _, member in ipairs(snapshot and snapshot.members or {}) do
+        if (tonumber(member.subgroup) or 1) == subgroup then
+            if raidIndex and tonumber(member.raidIndex) then
+                if tonumber(member.raidIndex) <= raidIndex then
+                    slot = slot + 1
+                end
+            else
+                slot = slot + 1
+                if member == target then break end
+            end
+        end
+    end
+    return math.max(1, slot)
+end
+
+local function AuraReportName(aura, fallback)
+    return tostring(
+        aura and (aura.raidCheckDefinitionName or aura.name)
+            or fallback
+            or "buff")
+end
+
+local function WrongRankEntry(member, aura, fallback)
+    local text = MemberDisplayName(member)
+        .. " (" .. AuraReportName(aura, fallback)
+    if aura and aura.raidCheckRank and aura.raidCheckMaxRank then
+        text = text .. (" R%d/%d"):format(
+            aura.raidCheckRank, aura.raidCheckMaxRank)
+    else
+        text = text .. " wrong rank"
+    end
+    if aura and aura.raidCheckSourceName
+        and aura.raidCheckSourceName ~= "" then
+        text = text .. ", by " .. aura.raidCheckSourceName
+    end
+    return text .. ")"
+end
+
+local function BuffClickSummary(snapshot, buffKey, report)
+    local eligible = EligibleMembers(snapshot, report.classes)
+    local correct, wrong, missing = 0, {}, {}
+    for _, member in ipairs(eligible) do
+        local aura = member.buffs and member.buffs[buffKey]
+        if aura and aura.raidCheckLowRank then
+            wrong[#wrong + 1] = WrongRankEntry(
+                member, aura, report.label)
+        elseif aura then
+            correct = correct + 1
+        else
+            missing[#missing + 1] = member
+        end
+    end
+
+    local lines = {
+        ("%s - %d/%d players have the correct rank."):format(
+            report.label, correct, #eligible),
+    }
+    if #wrong > 0 then
+        lines[#lines + 1] = "Wrong Rank " .. report.label
+            .. ": " .. table.concat(wrong, ", ") .. "."
+    end
+    lines[#lines + 1] = NameListLine(
+        "Missing " .. report.label, missing)
+    return lines
+end
+
+local function PlayerBuffClickSummary(
+        snapshot, member, buffKey, report)
+    if report.classes and not report.classes[member.classFile] then
+        return {
+            ("%s - %s - Group %d, Slot %d - %s is not required "
+                .. "for this class."):format(
+                MemberDisplayName(member),
+                MemberClassLabel(member),
+                tonumber(member.subgroup) or 1,
+                MemberGroupSlot(snapshot, member),
+                report.label),
+        }
+    end
+
+    local playerName = MemberDisplayName(member)
+    local subgroup = tonumber(member.subgroup) or 1
+    local groupSlot = MemberGroupSlot(snapshot, member)
+    local location = ("%s - %s - Group %d, Slot %d"):format(
+        playerName, MemberClassLabel(member), subgroup, groupSlot)
+    local aura = member.buffs and member.buffs[buffKey]
+    if aura and not aura.raidCheckLowRank then
+        return {
+            location .. " - Has "
+                .. AuraReportName(aura, report.label) .. ".",
+        }
+    end
+
+    local lines = {}
+    if aura then
+        local status = "Wrong rank "
+            .. AuraReportName(aura, report.label)
+        if aura.raidCheckRank and aura.raidCheckMaxRank then
+            status = status .. (" (Rank %d/%d)"):format(
+                aura.raidCheckRank, aura.raidCheckMaxRank)
+        end
+        if aura.raidCheckSourceName
+            and aura.raidCheckSourceName ~= "" then
+            status = status .. ", buffed by "
+                .. aura.raidCheckSourceName
+        end
+        lines[#lines + 1] = location .. " - " .. status .. "."
+    else
+        lines[#lines + 1] = location
+            .. " - Missing " .. report.label .. "."
+    end
+    lines[#lines + 1] = ("Please buff %s on %s in Group %d, Slot %d."):format(
+        report.label, playerName, subgroup, groupSlot)
+    return lines
+end
+
+local function ReadyClickSummary(members)
+    local ready = MembersMatching(members, function(member)
+        return member.readyStatus == "ready"
+    end)
+    local notReady = MembersMatching(members, function(member)
+        return member.readyStatus == "notReady"
+    end)
+    local awaiting = MembersMatching(members, function(member)
+        return member.readyStatus ~= "ready"
+            and member.readyStatus ~= "notReady"
+    end)
+    return {
+        ("Ready Check - %d/%d players Ready."):format(
+            #ready, #members),
+        NameListLine("Not Ready", notReady),
+        NameListLine("Awaiting Response", awaiting),
+    }
+end
+
+local function WorldBuffClickSummary(members, oneHourOnly)
+    if oneHourOnly then
+        local covered = MembersMatching(members, function(member)
+            return HasWorldBuff(member, ONE_HOUR_WORLD_BUFFS)
+        end)
+        return {
+            ("1-Hour World Buffs - %d/%d players have at least 1 "
+                .. "one-hour World Buff."):format(
+                #covered, #members),
+        }
+    end
+
+    local active = MembersMatching(members, function(member)
+        return HasWorldBuff(member)
+    end)
+    local booned = MembersMatching(members, function(member)
+        return HasAuraSpell(member.worldBuffs, 349981)
+    end)
+    local empty = MembersMatching(members, function(member)
+        return not HasWorldBuff(member)
+            and not HasAuraSpell(member.worldBuffs, 349981)
+    end)
+    return {
+        ("World Buffs - %d/%d players have at least 1 World Buff."):format(
+            #active, #members),
+        NameListLine("Booned", booned),
+        NameListLine("No World Buffs", empty),
+    }
+end
+
+local function BattleShoutClickSummary(members, listPlayers)
+    local found = MembersMatching(members, function(member)
+        return HasMaxRankBuff(member, "attackPower")
+    end)
+    if listPlayers then
+        return {
+            NameListLine("Players with Battle Shout", found),
+        }
+    end
+    return {
+        ("Battle Shout - %d/%d players have Battle Shout."):format(
+            #found, #members),
+    }
+end
+
+local function DisallowedClickSummary(members)
+    local affected = {}
+    local foundBySpell = {}
+    for _, member in ipairs(members) do
+        local memberFound = false
+        for _, aura in ipairs(member.disallowed or {}) do
+            local spellId = tonumber(aura.spellId)
+            if DISALLOWED_AURAS[spellId] then
+                foundBySpell[spellId] =
+                    foundBySpell[spellId] or {}
+                foundBySpell[spellId][
+                    #foundBySpell[spellId] + 1] = member
+                memberFound = true
+            end
+        end
+        if memberFound then affected[#affected + 1] = member end
+    end
+
+    local lines = {
+        ("Disqualifying Buffs Found - %d/%d"):format(
+            #affected, #members),
+    }
+    for _, definition in ipairs(DISALLOWED_AURA_DEFINITIONS) do
+        local found = foundBySpell[definition.spellId]
+        if found and #found > 0 then
+            lines[#lines + 1] = definition.name .. " - "
+                .. table.concat(SortedNames(found), ", ") .. "."
+        end
+    end
+    if #affected == 0 then
+        lines[#lines + 1] =
+            "No disqualifying buffs detected."
+    end
+    return lines
+end
+
+local function PresenceClickSummary(
+        label, members, hasRequirement, missingLabel, coveredText)
+    local found = MembersMatching(members, hasRequirement)
+    local missing = MissingMembers(members, hasRequirement)
+    return {
+        ("%s - %d/%d players %s."):format(
+            label, #found, #members, coveredText or "covered"),
+        NameListLine(missingLabel or ("Missing " .. label), missing),
+    }
+end
+
+local function PotionClickSummary(members, spellId)
+    spellId = tonumber(spellId)
+    local definition = POTION_AURAS[spellId]
+    if not definition then return nil end
+    return PresenceClickSummary(
+        definition.name,
+        members,
+        function(member)
+            return HasAuraSpell(member.potions, spellId)
+        end,
+        "Missing " .. definition.name,
+        "have " .. definition.name)
+end
+
+local function ConsumesClickSummary(members)
+    local atLeastTwo = MembersMatching(members, function(member)
+        return #(member.consumes or {}) >= 2
+    end)
+    local atLeastOne = MembersMatching(members, function(member)
+        return #(member.consumes or {}) >= 1
+    end)
+    local none = MembersMatching(members, function(member)
+        return #(member.consumes or {}) == 0
+    end)
+    return {
+        ("Consumes - %d/%d players have at least 2; %d/%d have "
+            .. "at least 1."):format(
+                #atLeastTwo, #members, #atLeastOne, #members),
+        NameListLine("No Consumes", none),
+    }
+end
+
+function PRT:BuildRaidCheckClickReport(columnKey, snapshot, options)
+    snapshot = snapshot or self:BuildRaidCheckSnapshot()
+    options = options or {}
+    local members = snapshot.members or {}
+    if #members == 0 then
+        return PrefixAndSplitChatLines(
+            { "No group members found." },
+            RAID_CHECK_CLICK_REPORT_PREFIX),
+            snapshot
+    end
+
+    local lines
+    if columnKey == "player" then
+        lines = ReadyClickSummary(members)
+    elseif columnKey == "worldBuffs" then
+        lines = WorldBuffClickSummary(
+            members, options.shift == true)
+    elseif columnKey == "attackPower" then
+        lines = BattleShoutClickSummary(
+            members, options.shift == true)
+    elseif columnKey == "disallowed" then
+        lines = DisallowedClickSummary(members)
+    elseif columnKey == "flask" then
+        lines = PresenceClickSummary(
+            "Flask",
+            members,
+            function(member) return member.flask ~= nil end,
+            "Missing Flask",
+            "have a Flask")
+    elseif columnKey == "zanza" then
+        lines = PresenceClickSummary(
+            "Zanza",
+            members,
+            function(member)
+                return #(member.zanza or {}) > 0
+            end,
+            "Missing Zanza",
+            "have a Zanza buff")
+    elseif columnKey == "potions" then
+        lines = PotionClickSummary(
+            members, options.spellId)
+    elseif columnKey == "consumes" then
+        lines = ConsumesClickSummary(members)
+    elseif columnKey == "durability" then
+        lines = DurabilitySummary(snapshot)
+    else
+        local buffReport = CLICK_BUFF_REPORTS[columnKey]
+        if buffReport then
+            if options.shift and options.member then
+                lines = PlayerBuffClickSummary(
+                    snapshot,
+                    options.member,
+                    columnKey,
+                    buffReport)
+            else
+                lines = BuffClickSummary(
+                    snapshot, columnKey, buffReport)
+            end
+        end
+    end
+
+    if not lines then return nil, snapshot end
+    return PrefixAndSplitChatLines(
+        lines, RAID_CHECK_CLICK_REPORT_PREFIX),
+        snapshot
+end
+
+function PRT:SendRaidCheckClickReport(columnKey, snapshot, options)
+    options = options or {}
+    if columnKey == "durability"
+        and not options._durabilityRefreshed
+        and not (snapshot and snapshot.preview) then
+        self:RequestRaidCheckDurability()
+        if C_Timer and C_Timer.After then
+            local nextOptions = {}
+            for key, value in pairs(options) do
+                nextOptions[key] = value
+            end
+            nextOptions._durabilityRefreshed = true
+            C_Timer.After(0.75, function()
+                self:SendRaidCheckClickReport(
+                    columnKey,
+                    self:BuildRaidCheckSnapshot(),
+                    nextOptions)
+            end)
+            return true
+        end
+    end
+
+    local lines = self:BuildRaidCheckClickReport(
+        columnKey, snapshot, options)
+    if not lines then return false end
+
+    -- The generated Test Preview never sends fabricated preparation results
+    -- to group chat. Its click reports remain available locally for UI tests.
+    if snapshot and snapshot.preview then
+        for _, line in ipairs(lines) do self.Print(line) end
+        return true
+    end
+
+    local channel = GetReportChannel()
+    if not channel then
+        for _, line in ipairs(lines) do self.Print(line) end
+        self.Print(
+            "Raid Check report printed locally because you are not grouped.")
+        return true
+    end
+
+    local sent = false
+    for _, line in ipairs(lines) do
+        sent = SendChat(line, channel) or sent
+    end
+    return sent
 end
 
 function PRT:BuildRaidCheckChatCommandResponse(commandText, snapshot)
