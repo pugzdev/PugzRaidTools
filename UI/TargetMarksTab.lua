@@ -36,20 +36,8 @@ local ENTRY_BOTTOM_PAD = 6
 local EDITOR_HEADER_OFFSET = 90
 local EDITOR_BOTTOM_PAD = 34
 
-local MARK_ITEMS = {
-    { text = "-", value = 0 },
-}
-
-for _, mi in ipairs(PRT.MARK_ICONS) do
-    if mi.id > 0 then
-        MARK_ITEMS[#MARK_ITEMS + 1] = {
-            text = string.format(
-                "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_%d:14:14|t %s",
-                mi.id, mi.name),
-            value = mi.id,
-        }
-    end
-end
+local MARK_ITEMS = W.BuildRaidTargetDropdownItems(
+    PRT.MARK_ICONS, { clearText = "-" })
 
 local function GetActivePreset()
     return PRT:GetActiveTargetMarksPreset()
@@ -61,7 +49,7 @@ end
 
 function PRT:BuildTargetMarksTab()
     local panel = CreateFrame("Frame", nil, UIParent)
-    panel._entryUiState = {}
+    panel._entryUiState = setmetatable({}, { __mode = "k" })
     panel._refreshGuard = W.CreateDeferredRefreshGuard()
 
     -----------------------------------------------------------------------
@@ -203,11 +191,6 @@ function PRT:BuildTargetMarksTab()
 
     local function RefreshAfterImport()
         panel:RefreshTargetMarksView(true)
-        C_Timer.After(0, function()
-            if panel and panel:IsShown() then
-                panel:RefreshTargetMarksView(true)
-            end
-        end)
     end
 
     -----------------------------------------------------------------------
@@ -219,8 +202,6 @@ function PRT:BuildTargetMarksTab()
             self.selectedGroupName = nil
             return nil, nil
         end
-
-        PRT:EnsureTargetMarksPresetDefaults(preset)
 
         if self.selectedGroupName then
             for idx, group in ipairs(preset.groups) do
@@ -239,9 +220,9 @@ function PRT:BuildTargetMarksTab()
         return nil, nil
     end
 
-    local function GetEntryUiState(entry)
+    local function GetEntryUiState(entry, create)
         local state = panel._entryUiState[entry]
-        if not state then
+        if not state and create then
             state = { main = 0, alt1 = 0, alt2 = 0 }
             panel._entryUiState[entry] = state
         end
@@ -252,18 +233,23 @@ function PRT:BuildTargetMarksTab()
         panel._entryUiState[entry] = nil
     end
 
-    local function GetVisibleSlotCount(entry, slot)
-        local list = PRT:GetTargetMarksSlotList(entry, slot)
-        local state = GetEntryUiState(entry)
-        local extraBlanks = state[slot] or 0
+    local function GetVisibleSlotCount(entry, slot, list, state)
+        list = list or PRT:GetTargetMarksSlotList(entry, slot)
+        state = state or GetEntryUiState(entry, false)
+        local extraBlanks = state and state[slot] or 0
         local placeholder = (#list == 0) and 1 or 0
         return math.max(1, #list + extraBlanks + placeholder)
     end
 
     local function GetEntryVisibleCount(entry)
+        PRT:EnsureTargetMarksEntryDefaults(entry)
+        local marks = entry.marks
+        local state = GetEntryUiState(entry, false)
         local maxVisibleCount = 1
         for _, slotInfo in ipairs(SLOT_COLUMNS) do
-            local visibleCount = GetVisibleSlotCount(entry, slotInfo.key)
+            local slot = slotInfo.key
+            local visibleCount = GetVisibleSlotCount(
+                entry, slot, marks[slot], state)
             if visibleCount > maxVisibleCount then
                 maxVisibleCount = visibleCount
             end
@@ -497,115 +483,21 @@ function PRT:BuildTargetMarksTab()
     editor.btnAddEntryTop:SetPoint("TOPRIGHT", -8, -8)
     editor.btnAddEntry = W.CreateButton(editor, "+ Add NPC", 90, 20)
 
-    local markPicker = CreateFrame("Frame", nil, UIParent)
-    markPicker:SetFrameStrata("TOOLTIP")
-    markPicker:SetClampedToScreen(true)
-    markPicker:Hide()
-    W.StyleBox(markPicker, { 0.05, 0.05, 0.05, 0.98 }, PRT.C.BORDER)
-    markPicker.rows = {}
+    local markPicker = W.CreateDropdownMenu()
 
-    local function HideMarkPicker()
-        markPicker:Hide()
-        markPicker.owner = nil
-    end
-
-    local function CreateMarkPickerRow(idx)
-        local row = CreateFrame("Button", nil, markPicker)
-        row:SetHeight(20)
-        W.AddBackground(row, 0, 0, 0, 0)
-        row.text = W.CreateLabel(row, "", PRT.FONT_SIZE, 1, 1, 1)
-        row.text:SetPoint("LEFT", 8, 0)
-        row.text:SetPoint("RIGHT", -8, 0)
-        row.text:SetJustifyH("LEFT")
-        row:SetScript("OnEnter", function(self)
-            self._bgTex:SetColorTexture(PRT.C.SIDEBAR_SEL[1], PRT.C.SIDEBAR_SEL[2], PRT.C.SIDEBAR_SEL[3], PRT.C.SIDEBAR_SEL[4])
-        end)
-        row:SetScript("OnLeave", function(self)
-            self._bgTex:SetColorTexture(0, 0, 0, 0)
-        end)
-        row:SetPoint("TOPLEFT", 0, -((idx - 1) * 20))
-        row:SetPoint("TOPRIGHT", 0, -((idx - 1) * 20))
-        markPicker.rows[idx] = row
-        return row
-    end
-
-    for itemIdx, item in ipairs(MARK_ITEMS) do
-        local row = CreateMarkPickerRow(itemIdx)
-        row.value = item.value
-        row.text:SetText(item.text)
-        row:SetScript("OnClick", function(self)
-            local owner = markPicker.owner
-            HideMarkPicker()
-            if owner and owner.OnValuePicked then
-                owner:OnValuePicked(self.value)
-            end
-        end)
-    end
-
-    markPicker:SetWidth(SLOT_W)
-    markPicker:SetHeight(#MARK_ITEMS * 20)
-
-    local function ToggleMarkPicker(owner)
-        if markPicker:IsShown() and markPicker.owner == owner then
-            HideMarkPicker()
-            return
-        end
-
-        markPicker.owner = owner
-        markPicker:ClearAllPoints()
-        markPicker:SetPoint("TOPLEFT", owner, "BOTTOMLEFT", 0, -1)
-        markPicker:SetWidth(owner:GetWidth())
-        markPicker:Show()
-    end
-
-    local function GetMarkItemText(value)
-        local markId = tonumber(value) or 0
-        for _, item in ipairs(MARK_ITEMS) do
-            if item.value == markId then
-                return item.text
-            end
-        end
-        return tostring(markId)
+    local function MarkButtonSelected(value, _, _, button)
+        if button.onPick then button.onPick(value) end
     end
 
     local function CreateMarkButton(parent, width, onPick)
-        local btn = CreateFrame("Button", nil, parent)
-        btn:SetSize(width or SLOT_W, SLOT_ROW_H)
-        W.StyleBox(btn, PRT.C.INPUT_BG, PRT.C.BORDER)
+        local btn = W.CreateDropdown(
+            parent, width or SLOT_W, MARK_ITEMS, MarkButtonSelected, {
+                height = SLOT_ROW_H,
+                sharedMenu = markPicker,
+            })
         btn:SetFrameLevel((parent:GetFrameLevel() or 1) + 1)
-        btn:RegisterForClicks("LeftButtonUp")
-        btn.selectedValue = 0
         btn.onPick = onPick
-
-        btn.label = W.CreateLabel(btn, "-", PRT.FONT_SIZE, 1, 1, 1)
-        btn.label:SetPoint("LEFT", 8, 0)
-        btn.label:SetPoint("RIGHT", -20, 0)
-        btn.label:SetJustifyH("LEFT")
-
-        btn.arrow = W.CreateLabel(btn, "v", PRT.FONT_SIZE, PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3])
-        btn.arrow:SetPoint("RIGHT", -6, 0)
-
-        function btn:SetSelected(value)
-            self.selectedValue = tonumber(value) or 0
-            self.label:SetText(GetMarkItemText(self.selectedValue))
-        end
-
-        function btn:OnValuePicked(value)
-            self:SetSelected(value)
-            if self.onPick then
-                self.onPick(value)
-            end
-        end
-
-        btn:SetScript("OnClick", function(self)
-            ToggleMarkPicker(self)
-        end)
-        btn:SetScript("OnHide", function(self)
-            if markPicker.owner == self then
-                HideMarkPicker()
-            end
-        end)
-
+        btn:SetSelected(0)
         return btn
     end
 
@@ -621,7 +513,7 @@ function PRT:BuildTargetMarksTab()
 
     local function UpdateSlotValue(entry, slot, markIdx, value)
         local list = PRT:GetTargetMarksSlotList(entry, slot)
-        local uiState = GetEntryUiState(entry)
+        local uiState = GetEntryUiState(entry, false)
         local markId = tonumber(value) or 0
 
         if markIdx <= #list then
@@ -635,19 +527,19 @@ function PRT:BuildTargetMarksTab()
 
         if markId > 0 then
             table.insert(list, markId)
-            if (uiState[slot] or 0) > 0 then
+            if uiState and (uiState[slot] or 0) > 0 then
                 uiState[slot] = uiState[slot] - 1
             end
-        elseif (uiState[slot] or 0) > 0 then
+        elseif uiState and (uiState[slot] or 0) > 0 then
             uiState[slot] = uiState[slot] - 1
         end
     end
 
     local function RemoveLastSlotValue(entry, slot)
         local list = PRT:GetTargetMarksSlotList(entry, slot)
-        local uiState = GetEntryUiState(entry)
+        local uiState = GetEntryUiState(entry, false)
 
-        if (uiState[slot] or 0) > 0 then
+        if uiState and (uiState[slot] or 0) > 0 then
             uiState[slot] = uiState[slot] - 1
             return true
         end
@@ -661,16 +553,23 @@ function PRT:BuildTargetMarksTab()
     end
 
     local function BuildEntryMeta(group)
-        wipe(editor.entryMeta)
         local y = -EDITOR_HEADER_OFFSET
+        local entryCount = #group.entries
+        local oldMetaCount = #editor.entryMeta
 
         for idx, entry in ipairs(group.entries) do
             local height = GetEntryHeight(entry)
-            editor.entryMeta[idx] = {
-                y = y,
-                height = height,
-            }
+            local meta = editor.entryMeta[idx]
+            if not meta then
+                meta = {}
+                editor.entryMeta[idx] = meta
+            end
+            meta.y = y
+            meta.height = height
             y = y - height - ENTRY_GAP
+        end
+        for idx = entryCount + 1, oldMetaCount do
+            editor.entryMeta[idx] = nil
         end
 
         editor.addButtonY = y
@@ -715,6 +614,7 @@ function PRT:BuildTargetMarksTab()
     local function GetOrCreateEntryRow(poolIdx)
         if editor.rows[poolIdx] then return editor.rows[poolIdx] end
 
+        PRT:CountTargetMarksDebug("rowFramesCreated")
         local row = CreateFrame("Frame", nil, editor)
         W.StyleBox(row, { 0.05, 0.05, 0.05, 0.48 }, PRT.C.BORDER)
         row.markBtns = {}
@@ -767,6 +667,7 @@ function PRT:BuildTargetMarksTab()
                 PRT:InvalidateTargetMarksCache()
                 panel:RefreshGroupEditor()
             end)
+            PRT:CountTargetMarksDebug("markButtonsCreated")
 
             row.markBtns[slot][markIdx] = btn
             return btn
@@ -782,7 +683,7 @@ function PRT:BuildTargetMarksTab()
             btn:SetScript("OnClick", function()
                 local entry = GetCurrentEntry(row)
                 if not entry then return end
-                local uiState = GetEntryUiState(entry)
+                local uiState = GetEntryUiState(entry, true)
                 uiState[slot] = (uiState[slot] or 0) + 1
                 panel:RefreshGroupEditor()
             end)
@@ -805,18 +706,29 @@ function PRT:BuildTargetMarksTab()
             row.removeBtns[slot] = removeBtn
         end
 
-        function row:Refresh(entry)
+        function row:Refresh(entry, entryHeight)
             PRT:EnsureTargetMarksEntryDefaults(entry)
 
             self.npcEB:SetText(entry.npcId > 0 and tostring(entry.npcId) or "")
             self.nameEB:SetText(entry.targetName or "")
 
-            local maxVisibleCount = GetEntryVisibleCount(entry)
+            local marks = entry.marks
+            local state = GetEntryUiState(entry, false)
+            local maxVisibleCount = 1
+            for _, slotInfo in ipairs(SLOT_COLUMNS) do
+                local slot = slotInfo.key
+                local visibleCount = GetVisibleSlotCount(
+                    entry, slot, marks[slot], state)
+                if visibleCount > maxVisibleCount then
+                    maxVisibleCount = visibleCount
+                end
+            end
 
             for _, slotInfo in ipairs(SLOT_COLUMNS) do
                 local slot = slotInfo.key
-                local list = PRT:GetTargetMarksSlotList(entry, slot)
-                local visibleCount = GetVisibleSlotCount(entry, slot)
+                local list = marks[slot]
+                local visibleCount = GetVisibleSlotCount(
+                    entry, slot, list, state)
                 self.markBtns[slot] = self.markBtns[slot] or {}
 
                 for markIdx = 1, math.max(visibleCount, #self.markBtns[slot]) do
@@ -844,7 +756,9 @@ function PRT:BuildTargetMarksTab()
                 removeBtn:Show()
             end
 
-            self:SetHeight(GetEntryHeight(entry))
+            self:SetHeight(entryHeight
+                or (ENTRY_TOP_PAD + (maxVisibleCount * SLOT_ROW_H)
+                    + SLOT_BTN_H + ENTRY_BOTTOM_PAD))
         end
 
         editor.rows[poolIdx] = row
@@ -1200,7 +1114,6 @@ function PRT:BuildTargetMarksTab()
         local preset = GetActivePreset()
         local items = {}
         if preset then
-            PRT:EnsureTargetMarksPresetDefaults(preset)
             for _, group in ipairs(preset.groups) do
                 items[#items + 1] = { text = group.name, value = group.name }
             end
@@ -1215,7 +1128,7 @@ function PRT:BuildTargetMarksTab()
 
         editor:Hide()
         emptyState:Hide()
-        HideMarkPicker()
+        markPicker:Hide()
         for _, row in ipairs(editor.rows) do
             row:Hide()
         end
@@ -1226,6 +1139,7 @@ function PRT:BuildTargetMarksTab()
             scroll:UpdateContentHeight(48)
             editor.visibleStartIndex = 1
             editor.visibleEndIndex = 0
+            editor.visibleGroup = nil
             return
         end
 
@@ -1239,14 +1153,29 @@ function PRT:BuildTargetMarksTab()
         editor:SetHeight(editor.totalContentHeight)
         editor:Show()
         scroll:UpdateContentHeight(editor:GetHeight() + 6)
-        self:RefreshVisibleTargetMarkRows()
+        self:RefreshVisibleTargetMarkRows(true)
     end
 
-    function panel:RefreshVisibleTargetMarkRows()
+    function panel:RefreshVisibleTargetMarkRows(force)
+        local debugEnabled = PRT:IsTargetMarksMemoryDebugEnabled()
+        local startedAt = debugEnabled and type(debugprofilestop) == "function"
+            and debugprofilestop() or nil
         local group = self:GetSelectedGroup()
         if not group then return end
 
         local startIdx, endIdx = GetVisibleEntryRange(group)
+        if not force
+            and editor.visibleGroup == group
+            and editor.visibleStartIndex == startIdx
+            and editor.visibleEndIndex == endIdx then
+            PRT:CountTargetMarksDebug("unchangedRangeSkips")
+            return
+        end
+
+        PRT:CountTargetMarksDebug("visibleRefreshes")
+        PRT:CountTargetMarksDebug(
+            "rowBindings", math.max(0, endIdx - startIdx + 1))
+        editor.visibleGroup = group
         editor.visibleStartIndex = startIdx
         editor.visibleEndIndex = endIdx
 
@@ -1256,7 +1185,7 @@ function PRT:BuildTargetMarksTab()
             local meta = editor.entryMeta[entryIdx]
             local row = GetOrCreateEntryRow(poolIdx)
             row._idx = entryIdx
-            row:Refresh(entry)
+            row:Refresh(entry, meta.height)
             row:ClearAllPoints()
             row:SetPoint("TOPLEFT", 8, meta.y)
             row:SetPoint("TOPRIGHT", -8, meta.y)
@@ -1267,17 +1196,50 @@ function PRT:BuildTargetMarksTab()
         for idx = poolIdx, #editor.rows do
             editor.rows[idx]:Hide()
         end
+
+        if startedAt then
+            PRT:CountTargetMarksDebug(
+                "visibleRefreshMs", debugprofilestop() - startedAt)
+        end
+    end
+
+    local function RefreshVisibleRowsAfterEdit()
+        if panel and panel:IsShown() then
+            panel:RefreshVisibleTargetMarkRows()
+        end
     end
 
     function panel:RequestVisibleTargetMarkRowsRefresh()
-        local function RefreshAfterEdit()
-            if panel and panel:IsShown() then
-                panel:RefreshVisibleTargetMarkRows()
+        PRT:CountTargetMarksDebug("visibleRefreshRequests")
+        if self._refreshGuard:Defer(
+            "visibleRows", RefreshVisibleRowsAfterEdit) then return end
+        self:RefreshVisibleTargetMarkRows()
+    end
+
+    function panel:GetTargetMarksDebugSummary()
+        local markButtonCount = 0
+        for _, row in ipairs(editor.rows) do
+            for _, slotInfo in ipairs(SLOT_COLUMNS) do
+                markButtonCount = markButtonCount
+                    + #(row.markBtns[slotInfo.key] or {})
             end
         end
 
-        if self._refreshGuard:Defer("visibleRows", RefreshAfterEdit) then return end
-        self:RefreshVisibleTargetMarkRows()
+        local editStateCount = 0
+        for _ in pairs(self._entryUiState) do
+            editStateCount = editStateCount + 1
+        end
+
+        local group = self:GetSelectedGroup()
+        return {
+            groupEntries = group and #(group.entries or {}) or 0,
+            visibleStart = editor.visibleStartIndex or 0,
+            visibleEnd = editor.visibleEndIndex or 0,
+            pooledRows = #editor.rows,
+            markButtons = markButtonCount,
+            editStates = editStateCount,
+            scrollOffset = scroll.scroll:GetVerticalScroll() or 0,
+        }
     end
 
     function panel:RefreshTargetMarksView(deferred)

@@ -417,7 +417,8 @@ function PRT:RefreshFloatingList()
     local profileAtBottom = profileEmbedded and profilePosition == "bottom"
     local topProfileRows = profileAtTop and 1 or 0
     local bottomProfileRows = profileAtBottom and 1 or 0
-    local fcr, fcg, fcb = PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3]
+    local fcr, fcg, fcb = PRT.C.SETTINGS_FONT[1],
+        PRT.C.SETTINGS_FONT[2], PRT.C.SETTINGS_FONT[3]
     if fl.fontColor then fcr, fcg, fcb = fl.fontColor[1], fl.fontColor[2], fl.fontColor[3] end
     local maxW = 60
 

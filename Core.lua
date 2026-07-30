@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.3.1"
+PRT.VERSION = "1.3.2"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -59,6 +59,7 @@ PRT.MARK_ICONS = {
 ---------------------------------------------------------------------------
 PRT.C = {
     TITLE       = { 0.2, 1.0, 0.6 },
+    SETTINGS_FONT = { 61 / 255, 1.0, 139 / 255 }, -- #3DFF8B
     GOLD        = { 1.0, 0.82, 0.0 },
     WHITE       = { 1.0, 1.0, 1.0 },
     GRAY        = { 0.5, 0.5, 0.5 },
@@ -89,7 +90,8 @@ function PRT.CanonName(n)
 end
 
 function PRT.Trim(s)
-    return (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    local trimmed = (s or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    return trimmed
 end
 
 function PRT:GetHomeRealmName()
@@ -363,6 +365,7 @@ PRT.DEFAULTS = {
         width = 180,
         rowHeight = 20,
         textWidth = 180,
+        fontColor = { 61 / 255, 1.0, 139 / 255 },
         bgAlpha = 0.7,
         shown = true,
     },
@@ -372,6 +375,9 @@ PRT.DEFAULTS = {
         forcePositions   = false,
         frameW           = 1000,
         frameH           = 600,
+        frameX           = 0,
+        frameY           = 0,
+        fontColorDefaultsVersion = 1,
         minimapAngle     = 195,    -- degrees; 195° = bottom-left of minimap
         showMinimapIcon  = true,
         lastImportShape  = "",     -- last used import shape key ("8col","2col","1col","cooked")
@@ -380,7 +386,7 @@ PRT.DEFAULTS = {
     notification = {
         enabled   = true,
         fontSize  = 32,
-        fontColor = { 1.0, 0.82, 0.0 },
+        fontColor = { 61 / 255, 1.0, 139 / 255 },
         x         = 0,
         y         = 80,
         duration  = 3.0,
@@ -1517,6 +1523,10 @@ initFrame:SetScript("OnEvent", function(self, event, addon)
     self:UnregisterEvent("ADDON_LOADED")
 
     if not PugzRaidToolsDB then PugzRaidToolsDB = {} end
+    local savedSettings = PugzRaidToolsDB.settings
+    local migrateFontColorDefaults =
+        type(savedSettings) ~= "table"
+        or (tonumber(savedSettings.fontColorDefaultsVersion) or 0) < 1
     local savedFloat = PugzRaidToolsDB.floatingList
     local migrateFloatWidth = type(savedFloat) == "table"
         and savedFloat.width == nil
@@ -1526,6 +1536,21 @@ initFrame:SetScript("OnEvent", function(self, event, addon)
     DeepMerge(PRT.DEFAULTS, PugzRaidToolsDB)
     if migrateFloatWidth then
         PugzRaidToolsDB.floatingList.width = legacyFloatWidth
+    end
+    if migrateFontColorDefaults then
+        local oldColor = PugzRaidToolsDB.notification
+            and PugzRaidToolsDB.notification.fontColor
+        if type(oldColor) == "table"
+            and math.abs((tonumber(oldColor[1]) or 0) - 1.0) < 0.0001
+            and math.abs((tonumber(oldColor[2]) or 0) - 0.82) < 0.0001
+            and math.abs((tonumber(oldColor[3]) or 0) - 0.0) < 0.0001 then
+            PugzRaidToolsDB.notification.fontColor = {
+                PRT.C.SETTINGS_FONT[1],
+                PRT.C.SETTINGS_FONT[2],
+                PRT.C.SETTINGS_FONT[3],
+            }
+        end
+        PugzRaidToolsDB.settings.fontColorDefaultsVersion = 1
     end
     PRT.db = PugzRaidToolsDB
 
@@ -1568,6 +1593,18 @@ local function PRT_ClassColorText(name, classFile)
         return PRT_ColorText(name, { r, g, b })
     end
     return PRT_ColorText(name, PRT.C.GRAY)
+end
+
+local function PRT_PrintDebugHelp()
+    PRT.Print("Developer diagnostics:")
+    PRT.Print("  /prt debugui on|off - Record config-window resize diagnostics")
+    PRT.Print("  /prt debugui - Print config-window state and recent resize trace")
+    PRT.Print("  /prt debugui mem on|off - Trace Target Marks allocations")
+    PRT.Print("  /prt debugui mem [gc] - Print memory/counters, optionally after GC")
+    PRT.Print("  /prt debugui raid on|off - Trace Raid Check allocations")
+    PRT.Print("  /prt debugui raid [gc] - Print Raid Check memory/counters")
+    PRT.Print("  /prt debugui match on|off - Trace Auto Match allocations")
+    PRT.Print("  /prt debugui match [gc] - Print Auto Match memory/counters")
 end
 
 SlashCmdList["PRT"] = function(msg)
@@ -1652,6 +1689,56 @@ SlashCmdList["PRT"] = function(msg)
         if PRT.ResetKillCounters then PRT:ResetKillCounters() end
     elseif msg == "resetframe" or msg == "frame reset" or msg == "size reset" then
         if PRT.ResetMainFrameSize then PRT:ResetMainFrameSize() end
+    elseif msg == "debug" or msg == "debug help" then
+        PRT_PrintDebugHelp()
+    elseif msg == "debugui match on" or msg == "debug ui match on" then
+        if PRT.SetRosterMatcherMemoryDebug then
+            PRT:SetRosterMatcherMemoryDebug(true)
+        end
+    elseif msg == "debugui match off" or msg == "debug ui match off" then
+        if PRT.SetRosterMatcherMemoryDebug then
+            PRT:SetRosterMatcherMemoryDebug(false)
+        end
+    elseif msg == "debugui match gc" or msg == "debug ui match gc" then
+        if PRT.DumpRosterMatcherMemoryDebug then
+            PRT:DumpRosterMatcherMemoryDebug(true, "manual")
+        end
+    elseif msg == "debugui match" or msg == "debug ui match" then
+        if PRT.DumpRosterMatcherMemoryDebug then
+            PRT:DumpRosterMatcherMemoryDebug(false, "manual")
+        end
+    elseif msg == "debugui raid on" or msg == "debug ui raid on" then
+        if PRT.SetRaidCheckMemoryDebug then
+            PRT:SetRaidCheckMemoryDebug(true)
+        end
+    elseif msg == "debugui raid off" or msg == "debug ui raid off" then
+        if PRT.SetRaidCheckMemoryDebug then
+            PRT:SetRaidCheckMemoryDebug(false)
+        end
+    elseif msg == "debugui raid gc" or msg == "debug ui raid gc" then
+        if PRT.DumpRaidCheckMemoryDebug then
+            PRT:DumpRaidCheckMemoryDebug(true, "manual")
+        end
+    elseif msg == "debugui raid" or msg == "debug ui raid" then
+        if PRT.DumpRaidCheckMemoryDebug then
+            PRT:DumpRaidCheckMemoryDebug(false, "manual")
+        end
+    elseif msg == "debugui mem on" or msg == "debug ui mem on" then
+        if PRT.SetTargetMarksMemoryDebug then
+            PRT:SetTargetMarksMemoryDebug(true)
+        end
+    elseif msg == "debugui mem off" or msg == "debug ui mem off" then
+        if PRT.SetTargetMarksMemoryDebug then
+            PRT:SetTargetMarksMemoryDebug(false)
+        end
+    elseif msg == "debugui mem gc" or msg == "debug ui mem gc" then
+        if PRT.DumpTargetMarksMemoryDebug then
+            PRT:DumpTargetMarksMemoryDebug(true, "manual")
+        end
+    elseif msg == "debugui mem" or msg == "debug ui mem" then
+        if PRT.DumpTargetMarksMemoryDebug then
+            PRT:DumpTargetMarksMemoryDebug(false, "manual")
+        end
     elseif msg == "debugui on" then
         if PRT.SetMainFrameDebug then PRT:SetMainFrameDebug(true) end
     elseif msg == "debugui off" then
@@ -1748,8 +1835,6 @@ SlashCmdList["PRT"] = function(msg)
         PRT.Print("  /prt list - Toggle floating list")
         PRT.Print("  /prt lock - Toggle floating list lock")
         PRT.Print("  /prt resetframe - Reset config window size")
-        PRT.Print("  /prt debugui on|off - Record config-window resize diagnostics")
-        PRT.Print("  /prt debugui - Print config-window state and recent resize trace")
         PRT.Print("  /prt groups show - Show floating list")
         PRT.Print("  /prt groups hide - Hide floating list")
         PRT.Print("  /prt autoswap on - Enable Auto Swap")

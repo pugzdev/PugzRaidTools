@@ -241,7 +241,9 @@ function PRT:BuildSettingsTab()
         local db = PRT:GetDB()
         local color = db.floatingList.fontColor
         if color then return color[1], color[2], color[3] end
-        return PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3]
+        return PRT.C.SETTINGS_FONT[1],
+            PRT.C.SETTINGS_FONT[2],
+            PRT.C.SETTINGS_FONT[3]
     end
 
     local function SetFontColor(r, g, b)
@@ -375,7 +377,9 @@ function PRT:BuildSettingsTab()
         local db = PRT:GetDB()
         local color = db.notification and db.notification.fontColor
         if color then return color[1], color[2], color[3] end
-        return PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3]
+        return PRT.C.SETTINGS_FONT[1],
+            PRT.C.SETTINGS_FONT[2],
+            PRT.C.SETTINGS_FONT[3]
     end
 
     local function SetNotifColor(r, g, b)

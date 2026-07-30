@@ -108,7 +108,9 @@ local function ExtractSection(raw, sectionName)
     if not closeStart then
         return nil, "Missing [/" .. sectionName .. "]."
     end
-    return PRT.Trim(padded:sub(openEnd + 1, closeStart - 1))
+    local section = PRT.Trim(
+        padded:sub(openEnd + 1, closeStart - 1))
+    return section
 end
 
 local function ParseProfileMetadata(raw)

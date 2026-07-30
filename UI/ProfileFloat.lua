@@ -213,12 +213,15 @@ function PRT:InitEmbeddedProfileSelector()
     arrow:SetJustifyH("RIGHT")
     frame.profileArrow = arrow
 
-    local menu = CreateFrame("Frame", nil, UIParent)
-    menu:SetFrameStrata("DIALOG")
-    menu:SetClampedToScreen(true)
-    W.AddBackground(menu, 0.02, 0.02, 0.02, 0.98)
-    W.AddBorders(menu, PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3], 0.9)
-    menu:Hide()
+    local menu = W.CreateMenuFrame(UIParent, {
+        strata = "DIALOG",
+        clampedToScreen = true,
+        bgColor = { 0.02, 0.02, 0.02, 0.98 },
+        borderColor = {
+            PRT.C.BORDER[1], PRT.C.BORDER[2],
+            PRT.C.BORDER[3], 0.9,
+        },
+    })
     frame.profileMenu = menu
     frame.profileRows = {}
 
@@ -275,13 +278,16 @@ function PRT:InitProfileFloat()
     button:SetPoint("BOTTOMRIGHT", -PADDING, PADDING)
     frame.button = button
 
-    local menu = CreateFrame("Frame", nil, frame)
+    local menu = W.CreateMenuFrame(frame, {
+        bgColor = { 0.02, 0.02, 0.02, 0.98 },
+        borderColor = {
+            PRT.C.BORDER[1], PRT.C.BORDER[2],
+            PRT.C.BORDER[3], 0.9,
+        },
+    })
     menu:SetPoint("TOPLEFT", frame, "BOTTOMLEFT", 0, -2)
     menu:SetPoint("TOPRIGHT", frame, "BOTTOMRIGHT", 0, -2)
     menu:SetFrameLevel(frame:GetFrameLevel() + 20)
-    W.AddBackground(menu, 0.02, 0.02, 0.02, 0.98)
-    W.AddBorders(menu, PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3], 0.9)
-    menu:Hide()
     frame.menu = menu
     frame.rows = {}
 

@@ -3,7 +3,7 @@
 -- Classic Era roster scanning, ready-check state, chat reports, and
 -- durability exchange. UI construction lives in UI/RaidCheck*.lua.
 ---------------------------------------------------------------------------
-local _, PRT = ...
+local addonName, PRT = ...
 
 local ADDON_PREFIX = "PRTRaidCheck"
 local MAX_AURAS = 60
@@ -13,6 +13,144 @@ local RAID_CHECK_ICON_WIDTH = 17
 local RAID_CHECK_ICON_COLUMN_WIDTH = 28
 local RAID_CHECK_COUNT_WIDTH = 15
 local RAID_CHECK_MAX_CATEGORY_ICONS = 6
+
+local raidCheckMemoryDebug = {
+    enabled = false,
+    counters = {},
+    baseline = nil,
+}
+
+local function CountRaidCheckDebug(key, amount)
+    if not raidCheckMemoryDebug.enabled then return end
+    local counters = raidCheckMemoryDebug.counters
+    counters[key] = (counters[key] or 0) + (amount or 1)
+end
+
+local function ReadRaidCheckLuaHeapKB(forceGC)
+    if type(collectgarbage) ~= "function" then return nil end
+    if forceGC then pcall(collectgarbage, "collect") end
+    local ok, value = pcall(collectgarbage, "count")
+    return ok and tonumber(value) or nil
+end
+
+local function ReadRaidCheckAddonMemoryKB()
+    if type(UpdateAddOnMemoryUsage) == "function" then
+        UpdateAddOnMemoryUsage()
+    end
+    if type(GetAddOnMemoryUsage) ~= "function" then return nil end
+    return tonumber(GetAddOnMemoryUsage(addonName or "PugzRaidTools"))
+end
+
+local function CaptureRaidCheckMemory(forceGC)
+    local luaHeapKB = ReadRaidCheckLuaHeapKB(forceGC)
+    return {
+        addonKB = ReadRaidCheckAddonMemoryKB(),
+        luaHeapKB = luaHeapKB,
+    }
+end
+
+function PRT:IsRaidCheckMemoryDebugEnabled()
+    return raidCheckMemoryDebug.enabled
+end
+
+function PRT:CountRaidCheckDebug(key, amount)
+    CountRaidCheckDebug(key, amount)
+end
+
+function PRT:GetRaidCheckMemoryDebugCounters()
+    return raidCheckMemoryDebug.counters
+end
+
+function PRT:SetRaidCheckMemoryDebug(enabled)
+    enabled = enabled and true or false
+    if enabled then
+        raidCheckMemoryDebug.enabled = true
+        raidCheckMemoryDebug.counters = {}
+        raidCheckMemoryDebug.baseline = CaptureRaidCheckMemory(false)
+        PRT.Print(
+            "Raid Check memory debug enabled. Run Test Preview, close it, "
+            .. "then use /prt debugui raid [gc].")
+        return
+    end
+
+    if raidCheckMemoryDebug.enabled then
+        self:DumpRaidCheckMemoryDebug(false, "final")
+    end
+    raidCheckMemoryDebug.enabled = false
+    raidCheckMemoryDebug.baseline = nil
+    PRT.Print("Raid Check memory debug disabled.")
+end
+
+function PRT:DumpRaidCheckMemoryDebug(forceGC, label)
+    local snapshot = CaptureRaidCheckMemory(forceGC)
+    local baseline = raidCheckMemoryDebug.baseline or snapshot
+    local addonDelta = snapshot.addonKB and baseline.addonKB
+        and snapshot.addonKB - baseline.addonKB or nil
+    local luaDelta = snapshot.luaHeapKB and baseline.luaHeapKB
+        and snapshot.luaHeapKB - baseline.luaHeapKB or nil
+    local counters = raidCheckMemoryDebug.counters
+
+    PRT.Print(("RAID CHECK MEMORY %s%s addon=%s delta=%s "
+        .. "luaHeap(all addons)=%s delta=%s"):format(
+        tostring(label or "snapshot"),
+        forceGC and " after-GC" or "",
+        snapshot.addonKB
+            and ("%.1fKB"):format(snapshot.addonKB) or "unavailable",
+        addonDelta and ("%+.1fKB"):format(addonDelta) or "unavailable",
+        snapshot.luaHeapKB
+            and ("%.1fKB"):format(snapshot.luaHeapKB) or "unavailable",
+        luaDelta and ("%+.1fKB"):format(luaDelta) or "unavailable"))
+    PRT.Print(("previews=%d members=%d auras=%d refreshes=%d "
+        .. "rowUpdates=%d cellUpdates=%d tooltipBuilds=%d"):format(
+        counters.testSnapshotsBuilt or 0,
+        counters.previewMembersBuilt or 0,
+        counters.previewAurasBuilt or 0,
+        counters.windowRefreshes or 0,
+        counters.rowUpdates or 0,
+        counters.cellUpdates or 0,
+        counters.tooltipBuilds or 0))
+    PRT.Print(("created while tracing windows=%d headers=%d rows=%d "
+        .. "cells=%d texts=%d overlays=%d iconSlots=%d glows=%d "
+        .. "iconHits=%d miniMembers=%d")
+        :format(
+            counters.windowsCreated or 0,
+            counters.headerCellsCreated or 0,
+            counters.rowsCreated or 0,
+            counters.resultCellsCreated or 0,
+            counters.cellTextsCreated or 0,
+            counters.overlaysCreated or 0,
+            counters.iconSlotsCreated or 0,
+            counters.iconGlowsCreated or 0,
+            counters.iconHitsCreated or 0,
+            counters.miniMembersCreated or 0))
+    PRT.Print(("shared tooltipTargets=%d bindingsReleased=%d"):format(
+        counters.tooltipTargetsAttached or 0,
+        counters.windowBindingsReleased or 0))
+
+    local popup = self.raidCheckWindow
+    if popup and popup.GetRaidCheckDebugSummary then
+        local summary = popup:GetRaidCheckDebugSummary()
+        PRT.Print(("current shown=%s previewRetained=%s snapshotRetained=%s "
+            .. "members=%d columns=%d headers=%d rows=%d cells=%d "
+            .. "texts=%d overlays=%d iconSlots=%d glows=%d "
+            .. "iconHits=%d miniMembers=%d")
+            :format(
+                tostring(summary.shown),
+                tostring(summary.previewRetained),
+                tostring(summary.snapshotRetained),
+                summary.members or 0,
+                summary.columns or 0,
+                summary.headers or 0,
+                summary.rows or 0,
+                summary.cells or 0,
+                summary.texts or 0,
+                summary.overlays or 0,
+                summary.iconSlots or 0,
+                summary.iconGlows or 0,
+                summary.iconHits or 0,
+                summary.miniMembers or 0))
+    end
+end
 
 local function ResolveSpellIcon(spellId, fallback)
     local icon
@@ -694,13 +832,17 @@ local function CopyBuffDefinitions(destination, source)
     end
 end
 
+local raidCheckBuffDefinitions
+
 function PRT:GetRaidCheckBuffDefinitions()
+    if raidCheckBuffDefinitions then return raidCheckBuffDefinitions end
     local definitions = {}
     CopyBuffDefinitions(definitions, BASE_BUFFS)
     -- Keep the catalog stable on both factions. Visibility of the five
     -- Paladin Blessing columns is handled by the user's faction toggle.
     CopyBuffDefinitions(definitions, ALLIANCE_BUFFS)
-    return definitions
+    raidCheckBuffDefinitions = definitions
+    return raidCheckBuffDefinitions
 end
 
 function PRT:GetRaidCheckWorldBuffDefinitions()
@@ -791,7 +933,10 @@ function PRT:GetRaidCheckAuraCategoryDefinitions(categoryKey)
     return {}
 end
 
+local raidCheckColumnCatalog
+
 function PRT:GetRaidCheckColumnCatalog()
+    if raidCheckColumnCatalog then return raidCheckColumnCatalog end
     local catalog = {}
     for _, column in ipairs(CORE_COLUMNS) do
         catalog[#catalog + 1] = column
@@ -810,7 +955,8 @@ function PRT:GetRaidCheckColumnCatalog()
         }
     end
     catalog[#catalog + 1] = DURABILITY_COLUMN
-    return catalog
+    raidCheckColumnCatalog = catalog
+    return raidCheckColumnCatalog
 end
 
 local function FindColumnByKey(catalog, columnKey)
@@ -1376,6 +1522,7 @@ function PRT:BuildRaidCheckSnapshot()
 end
 
 local function PreviewAura(name, spellId, icon, rank, maxRank)
+    CountRaidCheckDebug("previewAurasBuilt")
     return {
         name = name,
         spellId = spellId,
@@ -1386,14 +1533,28 @@ local function PreviewAura(name, spellId, icon, rank, maxRank)
     }
 end
 
+local previewSpellIdsByDefinition =
+    setmetatable({}, { __mode = "k" })
+
 local function PreviewBuffAura(definition, rank)
-    local spellIds = {}
-    for spellId, spellRank in pairs(definition.spells or {}) do
-        if tonumber(spellRank) == rank then
+    local spellIdsByRank = previewSpellIdsByDefinition[definition]
+    if not spellIdsByRank then
+        spellIdsByRank = {}
+        for spellId, spellRank in pairs(definition.spells or {}) do
+            local numericRank = tonumber(spellRank)
+            local spellIds = spellIdsByRank[numericRank]
+            if not spellIds then
+                spellIds = {}
+                spellIdsByRank[numericRank] = spellIds
+            end
             spellIds[#spellIds + 1] = tonumber(spellId)
         end
+        for _, spellIds in pairs(spellIdsByRank) do
+            table.sort(spellIds)
+        end
+        previewSpellIdsByDefinition[definition] = spellIdsByRank
     end
-    table.sort(spellIds)
+    local spellIds = spellIdsByRank[rank] or {}
     local spellId = #spellIds > 0
         and spellIds[math.random(#spellIds)] or 0
     local displayIcon = definition.iconOverride
@@ -1440,13 +1601,16 @@ local function PreviewChance(percent)
     return math.random(100) <= percent
 end
 
+local previewAuraPool = {}
+
 local function RandomPreviewAuras(
         definitions, maximum, fallbackIcon, options)
     options = options or {}
     local upper = math.min(
         tonumber(options.lastDefinition) or #definitions,
         #definitions)
-    local pool = {}
+    local pool = previewAuraPool
+    for index = #pool, 1, -1 do pool[index] = nil end
     for index = 1, upper do
         local definition = definitions[index]
         if not options.includeDefinition
@@ -1501,6 +1665,7 @@ local function RandomUnusedPreviewIndex(used)
 end
 
 function PRT:BuildRaidCheckTestSnapshot()
+    CountRaidCheckDebug("testSnapshotsBuilt")
     local definitions = self:GetRaidCheckBuffDefinitions()
     local now = Now()
     local members = {}
@@ -1525,6 +1690,7 @@ function PRT:BuildRaidCheckTestSnapshot()
     local disallowedIndex =
         RandomUnusedPreviewIndex(usedGuaranteeIndices)
     for index, name in ipairs(PREVIEW_NAMES) do
+        CountRaidCheckDebug("previewMembersBuilt")
         local classFile =
             PREVIEW_CLASSES[((index - 1) % #PREVIEW_CLASSES) + 1]
         local member = {

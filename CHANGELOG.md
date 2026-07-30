@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.3.2 - 2026-07-30
+
+### Added
+
+- Added `/prt debug` as the dedicated index for Target Marks, Raid Check, Auto Match, and configuration-window diagnostics, keeping developer commands out of the normal `/prt help` output.
+
+### Changed
+
+- The main PRT configuration window now remembers its size and position across reloads and logouts, while safely clamping restored geometry to the current screen.
+- All PRT on-screen notifications now render at the highest frame strata so they remain visible above addon configuration windows.
+- Floating Group List and notification font colours now default to the addon theme colour `#3DFF8B`.
+- The Settings colour picker now opens above the PRT configuration window.
+- Reduced memory churn while scrolling large Target Marks Preset Groupings by caching normalized mark data, reusing a small visible-row pool, and skipping refreshes when the visible range is unchanged.
+- Significantly reduced Raid Check Test Preview memory by creating rows, enabled-column cells, text, count overlays, glow textures, icon interactions, and collapsed-mode members only when required.
+- Raid Check cells, rows, headers, and potion icons now reuse shared tooltip and click handlers instead of retaining separate callbacks for every UI target.
+- Closing Raid Check now releases its preview snapshot and all member and aura bindings, allowing transient preview data to be collected while retaining only the reusable UI pool.
+- Reduced Auto Match memory and analysis churn by deferring Alias Database windows until requested, coalescing initial refreshes, reusing name-comparison workspace, sharing row handlers, and releasing match analysis when the window closes.
+- Standardized configuration dropdowns on the shared UI widget, including animated hover fades, dynamic item refreshes, class-coloured labels, reusable menus for pooled controls, and portable raid-marker icons.
+
+### Fixed
+
+- Fixed overall PRT Profile imports being rejected with a misleading `0` chat message when valid bundled feature-preset sections were present.
+- Fixed a Target Marks editor error that could occur when changing tabs while a raid-marker dropdown was open.
+
 ## 1.3.1 - 2026-07-29
 
 ### Added

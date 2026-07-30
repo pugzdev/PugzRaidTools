@@ -4,10 +4,125 @@
 -- hold multiple mark priorities per modifier slot, matching the old
 -- AutoMarker flow without requiring duplicate UI rows.
 ---------------------------------------------------------------------------
-local _, PRT = ...
+local addonName, PRT = ...
 
 PRT.TARGET_MARK_SLOTS = { "main", "alt1", "alt2" }
 PRT.TARGET_MARKS_DEFAULT_VERSION = 2
+
+local normalizedTargetMarksEntries = setmetatable({}, { __mode = "k" })
+local targetMarksDebug = {
+    enabled = false,
+    counters = {},
+    baseline = nil,
+}
+
+local function CountTargetMarksDebug(key, amount)
+    if not targetMarksDebug.enabled then return end
+    local counters = targetMarksDebug.counters
+    counters[key] = (counters[key] or 0) + (amount or 1)
+end
+
+local function ReadLuaHeapKB(forceGC)
+    if type(collectgarbage) ~= "function" then return nil end
+    if forceGC then
+        pcall(collectgarbage, "collect")
+    end
+    local ok, value = pcall(collectgarbage, "count")
+    return ok and tonumber(value) or nil
+end
+
+local function ReadAddonMemoryKB()
+    if type(UpdateAddOnMemoryUsage) == "function" then
+        UpdateAddOnMemoryUsage()
+    end
+    if type(GetAddOnMemoryUsage) ~= "function" then return nil end
+    return tonumber(GetAddOnMemoryUsage(addonName or "PugzRaidTools"))
+end
+
+local function CaptureTargetMarksMemory(forceGC)
+    local luaHeapKB = ReadLuaHeapKB(forceGC)
+    return {
+        addonKB = ReadAddonMemoryKB(),
+        luaHeapKB = luaHeapKB,
+        time = type(GetTime) == "function" and GetTime() or 0,
+    }
+end
+
+function PRT:IsTargetMarksMemoryDebugEnabled()
+    return targetMarksDebug.enabled
+end
+
+function PRT:CountTargetMarksDebug(key, amount)
+    CountTargetMarksDebug(key, amount)
+end
+
+function PRT:GetTargetMarksDebugCounters()
+    return targetMarksDebug.counters
+end
+
+function PRT:SetTargetMarksMemoryDebug(enabled)
+    enabled = enabled and true or false
+    if enabled then
+        targetMarksDebug.enabled = true
+        targetMarksDebug.counters = {}
+        targetMarksDebug.baseline = CaptureTargetMarksMemory(false)
+        PRT.Print("Target Marks memory debug enabled. Scroll the list, then use /prt debugui mem.")
+        return
+    end
+
+    if targetMarksDebug.enabled then
+        self:DumpTargetMarksMemoryDebug(false, "final")
+    end
+    targetMarksDebug.enabled = false
+    targetMarksDebug.baseline = nil
+    PRT.Print("Target Marks memory debug disabled.")
+end
+
+function PRT:DumpTargetMarksMemoryDebug(forceGC, label)
+    local snapshot = CaptureTargetMarksMemory(forceGC)
+    local baseline = targetMarksDebug.baseline or snapshot
+    local addonDelta = snapshot.addonKB and baseline.addonKB
+        and (snapshot.addonKB - baseline.addonKB) or nil
+    local luaDelta = snapshot.luaHeapKB and baseline.luaHeapKB
+        and (snapshot.luaHeapKB - baseline.luaHeapKB) or nil
+    local counters = targetMarksDebug.counters
+
+    PRT.Print(("TARGET MARKS MEMORY %s%s addon=%s delta=%s luaHeap(all addons)=%s delta=%s"):format(
+        tostring(label or "snapshot"),
+        forceGC and " after-GC" or "",
+        snapshot.addonKB and ("%.1fKB"):format(snapshot.addonKB) or "unavailable",
+        addonDelta and ("%+.1fKB"):format(addonDelta) or "unavailable",
+        snapshot.luaHeapKB and ("%.1fKB"):format(snapshot.luaHeapKB) or "unavailable",
+        luaDelta and ("%+.1fKB"):format(luaDelta) or "unavailable"))
+    PRT.Print(("normalization calls=%d rebuilt=%d slotReads=%d groupScans=%d entriesScanned=%d"):format(
+        counters.entryEnsureCalls or 0,
+        counters.entryNormalizationRebuilds or 0,
+        counters.slotListReads or 0,
+        counters.groupEnsureCalls or 0,
+        counters.groupEntriesScanned or 0))
+    PRT.Print(("scroll requests=%d refreshes=%d unchangedSkips=%d rowBindings=%d refreshTime=%.2fms"):format(
+        counters.visibleRefreshRequests or 0,
+        counters.visibleRefreshes or 0,
+        counters.unchangedRangeSkips or 0,
+        counters.rowBindings or 0,
+        counters.visibleRefreshMs or 0))
+    PRT.Print(("created while tracing rows=%d markButtons=%d"):format(
+        counters.rowFramesCreated or 0,
+        counters.markButtonsCreated or 0))
+
+    local panel = self.targetMarksPanel
+    if panel and panel.GetTargetMarksDebugSummary then
+        local summary = panel:GetTargetMarksDebugSummary()
+        PRT.Print(("current groupEntries=%d visible=%d-%d pooledRows=%d markButtons=%d editStates=%d scroll=%.1f"):format(
+            summary.groupEntries or 0,
+            summary.visibleStart or 0,
+            summary.visibleEnd or 0,
+            summary.pooledRows or 0,
+            summary.markButtons or 0,
+            summary.editStates or 0,
+            summary.scrollOffset or 0))
+    end
+end
 
 PRT.TARGET_MARK_MODIFIER_ITEMS = {
     { text = "CTRL",     value = "CTRL" },
@@ -369,7 +484,7 @@ local function SerializeMarkList(list)
 end
 
 local function NewEntry(npcId, targetName)
-    return {
+    local entry = {
         npcId = tonumber(npcId) or 0,
         targetName = tostring(targetName or ""),
         marks = {
@@ -378,6 +493,8 @@ local function NewEntry(npcId, targetName)
             alt2 = {},
         },
     }
+    normalizedTargetMarksEntries[entry] = true
+    return entry
 end
 
 local function BuildLegacyEntries(rows)
@@ -439,6 +556,11 @@ end
 
 function PRT:EnsureTargetMarksEntryDefaults(entry)
     if not entry then return end
+    CountTargetMarksDebug("entryEnsureCalls")
+    if normalizedTargetMarksEntries[entry] then
+        return entry
+    end
+    CountTargetMarksDebug("entryNormalizationRebuilds")
 
     entry.npcId = tonumber(entry.npcId) or 0
     entry.targetName = tostring(entry.targetName or "")
@@ -475,6 +597,8 @@ function PRT:EnsureTargetMarksEntryDefaults(entry)
     entry.altMark1 = nil
     entry.altMark2 = nil
     entry.altMark3 = nil
+    normalizedTargetMarksEntries[entry] = true
+    return entry
 end
 
 local function GroupHasDuplicateNpcIds(entries)
@@ -524,6 +648,7 @@ function PRT:CollapseTargetMarksEntries(entries)
 end
 
 function PRT:GetTargetMarksSlotList(entry, slot)
+    CountTargetMarksDebug("slotListReads")
     self:EnsureTargetMarksEntryDefaults(entry)
     entry.marks[slot] = entry.marks[slot] or {}
     return entry.marks[slot]
@@ -531,8 +656,10 @@ end
 
 function PRT:EnsureTargetMarksGroupDefaults(group)
     if not group then return end
+    CountTargetMarksDebug("groupEnsureCalls")
     group.name = PRT.Trim(group.name or "") ~= "" and group.name or "Group"
     group.entries = group.entries or {}
+    CountTargetMarksDebug("groupEntriesScanned", #group.entries)
 
     if GroupHasDuplicateNpcIds(group.entries) then
         group.entries = self:CollapseTargetMarksEntries(group.entries)
@@ -545,6 +672,7 @@ end
 
 function PRT:EnsureTargetMarksPresetDefaults(preset)
     if not preset then return end
+    CountTargetMarksDebug("presetEnsureCalls")
     preset.name = PRT.Trim(preset.name or "") ~= "" and preset.name or "Preset"
     preset.groups = preset.groups or {}
     for _, group in ipairs(preset.groups) do
@@ -612,7 +740,7 @@ function PRT:RebuildTargetMarksCache()
             self:EnsureTargetMarksEntryDefaults(entry)
             if entry.npcId > 0 then
                 for _, slot in ipairs(self.TARGET_MARK_SLOTS) do
-                    local marks = self:GetTargetMarksSlotList(entry, slot)
+                    local marks = entry.marks[slot]
                     if #marks > 0 then
                         local list = lookup[slot][entry.npcId] or {}
                         for _, markId in ipairs(marks) do

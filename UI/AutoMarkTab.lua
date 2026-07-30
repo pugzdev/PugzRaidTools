@@ -53,19 +53,8 @@ end
 ---------------------------------------------------------------------------
 -- Mark icon dropdown items — in-game raid target textures
 ---------------------------------------------------------------------------
-local ICON_ITEMS = {}
-for _, mi in ipairs(PRT.MARK_ICONS) do
-    if mi.id == 0 then
-        ICON_ITEMS[#ICON_ITEMS + 1] = { text = "Clear mark", value = 0 }
-    else
-        ICON_ITEMS[#ICON_ITEMS + 1] = {
-            text = string.format(
-                "|TInterface\\TargetingFrame\\UI-RaidTargetingIcon_%d:14:14|t %s",
-                mi.id, mi.name),
-            value = mi.id,
-        }
-    end
-end
+local ICON_ITEMS = W.BuildRaidTargetDropdownItems(
+    PRT.MARK_ICONS, { clearText = "Clear mark" })
 
 local RETRY_DURATION_ITEMS = {
     { text = "1 second",  value = 1  },

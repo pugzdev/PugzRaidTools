@@ -409,7 +409,8 @@ function PRT:BuildProfilesTab()
             onAction = function(text)
                 local profile, err = PRT:ImportPRTProfileBundle(text)
                 if not profile then
-                    PRT.Print(err)
+                    PRT.Print(err
+                        or "The PRT profile could not be imported.")
                     return false
                 end
                 panel:RefreshProfilesView()

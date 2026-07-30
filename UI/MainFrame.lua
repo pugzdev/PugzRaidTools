@@ -1,7 +1,7 @@
 ---------------------------------------------------------------------------
 -- PugzRaidTools - Main Frame
 -- MRT-style config window: left sidebar + right content area.
--- Resizable, saves size in settings.
+-- Resizable, saves size and position in settings.
 ---------------------------------------------------------------------------
 local _, PRT = ...
 local W = PRT.UI
@@ -92,6 +92,80 @@ local function ClampFrameSize(w, h, frame)
     h = math.min(math.max(SnapToPhysicalPixel(h, frame), minH), maxH)
     return w, h
 end
+
+local function ClampMainFramePosition(x, y, width, height, frame)
+    local screenW = UIParent and UIParent.GetWidth
+        and UIParent:GetWidth() or DEFAULT_W
+    local screenH = UIParent and UIParent.GetHeight
+        and UIParent:GetHeight() or DEFAULT_H
+    width = tonumber(width) or (frame and frame:GetWidth()) or DEFAULT_W
+    height = tonumber(height) or (frame and frame:GetHeight()) or DEFAULT_H
+
+    local margin = SCREEN_MARGIN / 2
+    local maxX = math.max(0, (screenW - width) / 2 - margin)
+    local maxY = math.max(0, (screenH - height) / 2 - margin)
+    x = math.min(math.max(tonumber(x) or 0, -maxX), maxX)
+    y = math.min(math.max(tonumber(y) or 0, -maxY), maxY)
+    return SnapToPhysicalPixel(x, frame), SnapToPhysicalPixel(y, frame)
+end
+
+local function PersistMainFrameGeometry(frame)
+    local settings = PRT.db and PRT.db.settings
+    if not frame or not settings then return false end
+
+    local width, height = frame:GetSize()
+    local frameX, frameY = frame:GetCenter()
+    local parentX, parentY
+    if UIParent and UIParent.GetCenter then
+        parentX, parentY = UIParent:GetCenter()
+    end
+    if not parentX or not parentY then
+        parentX = (UIParent and UIParent:GetWidth() or DEFAULT_W) / 2
+        parentY = (UIParent and UIParent:GetHeight() or DEFAULT_H) / 2
+    end
+    if not frameX or not frameY then return false end
+
+    local x, y = ClampMainFramePosition(
+        frameX - parentX,
+        frameY - parentY,
+        width,
+        height,
+        frame)
+    settings.frameW = width
+    settings.frameH = height
+    settings.frameX = x
+    settings.frameY = y
+    return true
+end
+
+local function RestoreMainFrameGeometry(frame, settings, width, height)
+    if not frame then return end
+    settings = settings or {}
+    local x, y = ClampMainFramePosition(
+        settings.frameX,
+        settings.frameY,
+        width,
+        height,
+        frame)
+    settings.frameX = x
+    settings.frameY = y
+    frame:ClearAllPoints()
+    frame:SetPoint("CENTER", UIParent, "CENTER", x, y)
+end
+
+function PRT:SaveMainFrameGeometry(frame)
+    return PersistMainFrameGeometry(frame or self.mainFrame)
+end
+
+function PRT:RestoreMainFrameGeometry(frame, settings, width, height)
+    return RestoreMainFrameGeometry(
+        frame or self.mainFrame,
+        settings or (self.db and self.db.settings),
+        width,
+        height)
+end
+
+PRT.ClampMainFramePosition = ClampMainFramePosition
 
 local function ApplyResizeBounds(frame)
     local minW, minH, maxW, maxH = GetResizeBounds()
@@ -227,10 +301,7 @@ local function StopManualResize(frame)
     frame:SetScript("OnUpdate", nil)
     local width, height = frame:GetSize()
     LayoutMainFrameChildren(frame, width, height, false)
-    if PRT.db and PRT.db.settings then
-        PRT.db.settings.frameW = width
-        PRT.db.settings.frameH = height
-    end
+    PersistMainFrameGeometry(frame)
     RestoreResizeGrip(frame)
     RecordMainFrameTrace(frame, "resize-stop")
     if C_Timer and C_Timer.After then
@@ -321,11 +392,11 @@ local function CreateMainFrame()
     -- Toplevel focus already raises the complete window hierarchy when clicked.
     f._preserveChildFrameLevels = true
     f:SetSize(fw, fh)
-    f:SetPoint("CENTER")
     f:SetMovable(true)
     f:SetResizable(true)
     f:EnableMouse(true)
     f:SetClampedToScreen(true)
+    RestoreMainFrameGeometry(f, db.settings, fw, fh)
     f:SetFrameStrata("DIALOG")
     f:Hide()
     f:HookScript("OnShow", function(self)
@@ -336,6 +407,12 @@ local function CreateMainFrame()
     end)
     f:HookScript("OnHide", function(self)
         StopManualResize(self)
+    end)
+    f:RegisterEvent("PLAYER_LOGOUT")
+    f:SetScript("OnEvent", function(self, event)
+        if event == "PLAYER_LOGOUT" then
+            PersistMainFrameGeometry(self)
+        end
     end)
 
     ApplyResizeBounds(f)
@@ -368,7 +445,10 @@ local function CreateMainFrame()
         BringManagedFrameToFront(f, "FULLSCREEN_DIALOG")
         f:StartMoving()
     end)
-    titleBar:SetScript("OnDragStop", function() f:StopMovingOrSizing() end)
+    titleBar:SetScript("OnDragStop", function()
+        f:StopMovingOrSizing()
+        PersistMainFrameGeometry(f)
+    end)
     titleBar:HookScript("OnMouseDown", function()
         BringManagedFrameToFront(f, "FULLSCREEN_DIALOG")
     end)
@@ -495,6 +575,8 @@ function PRT:ResetMainFrameSize()
     if db and db.settings then
         db.settings.frameW = w
         db.settings.frameH = h
+        db.settings.frameX = 0
+        db.settings.frameY = 0
     end
 
     if self.mainFrame then
@@ -505,7 +587,7 @@ function PRT:ResetMainFrameSize()
         LayoutMainFrameChildren(self.mainFrame, w, h)
     end
 
-    PRT.Print(("Config window size reset to %dx%d."):format(w, h))
+    PRT.Print(("Config window reset to %dx%d at screen center."):format(w, h))
 end
 
 function PRT:SetMainFrameDebug(enabled)
@@ -690,6 +772,11 @@ function PRT:ToggleMainFrame()
             self.db.settings.frameW = fw
             self.db.settings.frameH = fh
             self.mainFrame:SetSize(fw, fh)
+            RestoreMainFrameGeometry(
+                self.mainFrame,
+                self.db.settings,
+                fw,
+                fh)
             LayoutMainFrameChildren(self.mainFrame, fw, fh)
         end
         self.mainFrame:Show()

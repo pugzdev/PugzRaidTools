@@ -768,12 +768,12 @@ function PRT:IsInviteFriend(fullName, guid)
     return false
 end
 
-local function HideAcceptedInvitePopup()
+local function HideAcceptedInvitePopup(accepted)
     local function HideIfInvite(frame)
         if not frame then return end
         local visible = frame.IsShown and frame:IsShown()
         if visible and (frame.which == "PARTY_INVITE" or frame.which == "PARTY_INVITE_XREALM") then
-            frame.inviteAccepted = 1
+            if accepted ~= false then frame.inviteAccepted = 1 end
             if StaticPopup_Hide then StaticPopup_Hide(frame.which) end
         end
     end

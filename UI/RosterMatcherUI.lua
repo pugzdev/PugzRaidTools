@@ -28,6 +28,18 @@ local MatcherApplySelections
 local MatcherRefresh
 local popupFocusSerial = 0
 
+local function CountRosterMatcherDebug(key, amount)
+    if PRT.CountRosterMatcherDebug then
+        PRT:CountRosterMatcherDebug(key, amount)
+    end
+end
+
+local function CountTableEntries(values)
+    local count = 0
+    for _ in pairs(values or {}) do count = count + 1 end
+    return count
+end
+
 local function CreateBareCheck(parent)
     local cb = W.CreateCheckButton(parent, 20)
     cb:SetSize(20, 20)
@@ -203,6 +215,7 @@ local function RequestAliasRefresh()
 end
 
 local function RequestMatcherRefresh()
+    CountRosterMatcherDebug("refreshRequests")
     if not matcherPopup or not matcherPopup:IsShown() or not matcherPopup.Refresh then return end
     if matcherPopup._refreshGuard
         and matcherPopup._refreshGuard:Defer("matcherPopup", RequestMatcherRefresh) then
@@ -229,8 +242,8 @@ local function GetPanelRosterSnapshot(panel)
     return roster
 end
 
-local function EnsureCommonPopups()
-    if not matcherConfirmPopup then
+local function EnsureCommonPopups(aliasFeatures)
+    if aliasFeatures ~= false and not matcherConfirmPopup then
         matcherConfirmPopup = W.CreateConfirmPopup("PRT_RosterMatcherConfirmPopup", {
             width = 360,
             height = 120,
@@ -265,6 +278,10 @@ local function EnsureCommonPopups()
                 BringPopupToFront(self)
             end)
     end
+
+    -- Auto Match only needs the shared delete confirmation. Defer the alias
+    -- merge, name, and character-editor popups until Aliases is opened.
+    if aliasFeatures == false then return end
 
     if not aliasNamePopup then
         aliasNamePopup = W.CreateNamePopup("PRT_RosterAliasNamePopup", {
@@ -330,9 +347,7 @@ local function EnsureCommonPopups()
         }
     end
     local classDD = W.CreateDropdown(
-        aliasCharacterPopup, 156, classItems, nil, {
-            hoverAnimation = "MRT",
-        })
+        aliasCharacterPopup, 156, classItems)
     classDD:SetPoint("TOPLEFT", 12, -102)
     classDD:SetSelected("", "Unknown")
     aliasCharacterPopup.classDD = classDD
@@ -875,6 +890,7 @@ end
 
 local function EnsureAliasPopup()
     if aliasPopup then return aliasPopup end
+    CountRosterMatcherDebug("aliasWindowsCreated")
     EnsureCommonPopups()
     EnsureAliasMergePopup()
 
@@ -1155,8 +1171,7 @@ end
 
 local function EnsureMatcherPopup()
     if matcherPopup then return matcherPopup end
-    EnsureCommonPopups()
-    EnsureAliasPopup()
+    CountRosterMatcherDebug("matcherWindowsCreated")
 
     matcherPopup = W.CreatePopupFrame("PRT_RosterMatcherPopup", MATCHER_WIDTH, MATCHER_HEIGHT, {
         title = "Auto Name Matcher",
@@ -1291,8 +1306,31 @@ local function EnsureMatcherPopup()
     end
     matcherPopup:SetScript("OnShow", function(self)
         BringPopupToFront(self)
-        MatcherRefresh(self)
         RequestMatcherRefresh()
+    end)
+    matcherPopup:HookScript("OnHide", function(self)
+        self._analysis = nil
+        self._panel = nil
+        self._state = { top = {}, lower = {} }
+        wipe(self._manualTargets)
+        self.drag.active = false
+        self.drag.liveIndex = nil
+        self.drag.hoverSlotIndex = nil
+        self.dragGhost:Hide()
+        for _, row in ipairs(self._topRows) do
+            row.slotIndex = nil
+            row.accept._slotIndex = nil
+            row.deleteBtn._aliasId = nil
+            row.deleteBtn._aliasLabel = nil
+        end
+        for _, row in ipairs(self._lowerRows) do
+            row.slotIndex = nil
+        end
+        for _, button in ipairs(self._pillButtons) do
+            button.liveIndex = nil
+            button.displayName = nil
+        end
+        CountRosterMatcherDebug("windowCleanups")
     end)
     matcherPopup:HookScript("OnSizeChanged", function(self)
         if self:IsShown() then
@@ -1302,11 +1340,101 @@ local function EnsureMatcherPopup()
     return matcherPopup
 end
 
+local function HandleTopAliasTextChanged(editBox)
+    local row = editBox._matcherRow
+    if not row or not row.slotIndex then return end
+    local state = matcherPopup._state.top[row.slotIndex] or {}
+    matcherPopup._state.top[row.slotIndex] = state
+    state.aliasText = editBox:GetText() or ""
+end
+
+local function HandleTopAcceptClick(checkButton)
+    local row = checkButton._matcherRow
+    if not row or not row.slotIndex then return end
+    local state = matcherPopup._state.top[row.slotIndex] or {}
+    matcherPopup._state.top[row.slotIndex] = state
+    state.accept = checkButton:GetChecked()
+    RequestMatcherRefresh()
+end
+
+local function HandleTopDeleteClick(button)
+    local aliasId = button._aliasId
+    if not aliasId then return end
+    EnsureCommonPopups(false)
+    local aliasLabel = button._aliasLabel or ""
+    OpenPopupOnTop(aliasDeleteConfirmPopup, {
+        title = "Delete Alias",
+        message = "Delete '" .. aliasLabel .. "' and its characters?",
+        confirmText = "Delete",
+        onConfirm = function()
+            PRT:DeleteRosterAlias(aliasId)
+            RequestMatcherRefresh()
+            if aliasPopup and aliasPopup:IsShown() then
+                RequestAliasRefresh()
+            end
+        end,
+    })
+end
+
+local function HandleLowerAliasTextChanged(editBox)
+    local row = editBox._matcherRow
+    if not row or not row.slotIndex then return end
+    local state = matcherPopup._state.lower[row.slotIndex] or {}
+    matcherPopup._state.lower[row.slotIndex] = state
+    state.aliasText = editBox:GetText() or ""
+end
+
+local function EnsureLowerAliasInput(row)
+    if row.saveAlias then return row.saveAlias end
+    CountRosterMatcherDebug("lowerAliasInputsCreated")
+    local editBox = W.CreateEditBox(
+        row, 186, 20, "Alias...")
+    editBox:SetPoint("LEFT", 806, 0)
+    editBox._matcherRow = row
+    matcherPopup._refreshGuard:Track(editBox)
+    editBox:HookScript(
+        "OnTextChanged", HandleLowerAliasTextChanged)
+    row.saveAlias = editBox
+    return editBox
+end
+
+local function HandleLowerTargetMouseUp(_, button)
+    if button == "LeftButton" then
+        matcherPopup:_finishManualDrag()
+    end
+end
+
+local function HandleLowerTargetMouseDown(target)
+    local row = target._matcherRow
+    local state = row and row.slotIndex
+        and matcherPopup._state.lower[row.slotIndex]
+    if state and state.manualLiveIndex then
+        state.manualLiveIndex = nil
+        RequestMatcherRefresh()
+    end
+end
+
+local function HandlePillMouseDown(button, mouseButton)
+    if mouseButton ~= "LeftButton" then return end
+    matcherPopup.drag.active = true
+    matcherPopup.drag.liveIndex = button.liveIndex
+    matcherPopup.drag.hoverSlotIndex = nil
+    matcherPopup.dragGhost.label:SetText(button.displayName or "")
+    matcherPopup.dragGhost:Show()
+end
+
+local function HandlePillMouseUp(_, button)
+    if button == "LeftButton" then
+        matcherPopup:_finishManualDrag()
+    end
+end
+
 local function GetOrCreateTopRow(index)
     local row = matcherPopup._topRows[index]
     if row then return row end
 
     row = CreateFrame("Frame", nil, matcherPopup.content)
+    CountRosterMatcherDebug("topRowsCreated")
     row:SetHeight(24)
 
     row.import = W.CreateLabel(row, "", PRT.FONT_SIZE, 1, 1, 1)
@@ -1331,18 +1459,19 @@ local function GetOrCreateTopRow(index)
 
     row.accept = CreateBareCheck(row)
     row.accept:SetPoint("LEFT", 648, 0)
+    row.accept._matcherRow = row
+    row.accept:SetScript("OnClick", HandleTopAcceptClick)
 
     row.saveAlias = W.CreateEditBox(row, 154, 20, "Alias...")
     row.saveAlias:SetPoint("LEFT", 740, 0)
+    row.saveAlias._matcherRow = row
     matcherPopup._refreshGuard:Track(row.saveAlias)
-    row.saveAlias:HookScript("OnTextChanged", function(self)
-        if not row.slotIndex then return end
-        matcherPopup._state.top[row.slotIndex] = matcherPopup._state.top[row.slotIndex] or {}
-        matcherPopup._state.top[row.slotIndex].aliasText = self:GetText() or ""
-    end)
+    row.saveAlias:HookScript(
+        "OnTextChanged", HandleTopAliasTextChanged)
 
     row.deleteBtn = W.CreateDeleteButton(row, nil, { width = 20, height = 18 })
     row.deleteBtn:SetPoint("LEFT", 912, 0)
+    row.deleteBtn:SetScript("OnClick", HandleTopDeleteClick)
 
     matcherPopup._topRows[index] = row
     return row
@@ -1353,6 +1482,7 @@ local function GetOrCreateLowerRow(index)
     if row then return row end
 
     row = CreateFrame("Frame", nil, matcherPopup.content)
+    CountRosterMatcherDebug("lowerRowsCreated")
     row:SetHeight(24)
 
     row.import = W.CreateLabel(row, "", PRT.FONT_SIZE, 1, 1, 1)
@@ -1384,27 +1514,11 @@ local function GetOrCreateLowerRow(index)
     row.confidence:SetWidth(120)
     row.confidence:SetJustifyH("LEFT")
 
-    row.saveAlias = W.CreateEditBox(row, 186, 20, "Alias...")
-    row.saveAlias:SetPoint("LEFT", 806, 0)
-    matcherPopup._refreshGuard:Track(row.saveAlias)
-    row.saveAlias:HookScript("OnTextChanged", function(self)
-        if not row.slotIndex then return end
-        matcherPopup._state.lower[row.slotIndex] = matcherPopup._state.lower[row.slotIndex] or {}
-        matcherPopup._state.lower[row.slotIndex].aliasText = self:GetText() or ""
-    end)
-
-    row.matchTarget:SetScript("OnMouseUp", function(_, button)
-        if button == "LeftButton" then
-            matcherPopup:_finishManualDrag()
-        end
-    end)
-    row.matchTarget:SetScript("OnMouseDown", function()
-        local slotState = matcherPopup._state.lower[row.slotIndex]
-        if slotState and slotState.manualLiveIndex then
-            slotState.manualLiveIndex = nil
-            RequestMatcherRefresh()
-        end
-    end)
+    row.matchTarget._matcherRow = row
+    row.matchTarget:SetScript(
+        "OnMouseUp", HandleLowerTargetMouseUp)
+    row.matchTarget:SetScript(
+        "OnMouseDown", HandleLowerTargetMouseDown)
 
     matcherPopup._lowerRows[index] = row
     return row
@@ -1418,20 +1532,10 @@ local function GetOrCreatePillButton(index)
         bgColor = { 0.08, 0.08, 0.08, 0.95 },
         hoverBgColor = { 0.12, 0.12, 0.12, 1.0 },
     })
+    CountRosterMatcherDebug("pillButtonsCreated")
     btn:RegisterForClicks("AnyDown", "AnyUp")
-    btn:SetScript("OnMouseDown", function(self, button)
-        if button ~= "LeftButton" then return end
-        matcherPopup.drag.active = true
-        matcherPopup.drag.liveIndex = self.liveIndex
-        matcherPopup.drag.hoverSlotIndex = nil
-        matcherPopup.dragGhost.label:SetText(self.displayName or "")
-        matcherPopup.dragGhost:Show()
-    end)
-    btn:SetScript("OnMouseUp", function(_, button)
-        if button == "LeftButton" then
-            matcherPopup:_finishManualDrag()
-        end
-    end)
+    btn:SetScript("OnMouseDown", HandlePillMouseDown)
+    btn:SetScript("OnMouseUp", HandlePillMouseUp)
 
     matcherPopup._pillButtons[index] = btn
     return btn
@@ -1439,6 +1543,7 @@ end
 
 local function EnsureMatcherHeaderWidgets()
     if matcherPopup._topHeader then return end
+    CountRosterMatcherDebug("headerWidgetsCreated")
 
     local content = matcherPopup.content
 
@@ -1579,10 +1684,6 @@ local function RenderTopSection(startY)
         matcherPopup._state.top[match.importEntry.slotIndex] = state
 
         row.accept:SetChecked(state.accept)
-        row.accept:SetScript("OnClick", function(self)
-            matcherPopup._state.top[match.importEntry.slotIndex].accept = self:GetChecked()
-            RequestMatcherRefresh()
-        end)
 
         if match.canSave then
             SetAliasInputState(row.saveAlias, true, state.aliasText or "")
@@ -1591,23 +1692,12 @@ local function RenderTopSection(startY)
         end
 
         if match.canDeleteAlias and match.alias then
+            row.deleteBtn._aliasId = match.alias.id
+            row.deleteBtn._aliasLabel = match.alias.label or ""
             row.deleteBtn:Show()
-            row.deleteBtn:SetScript("OnClick", function()
-                OpenPopupOnTop(aliasDeleteConfirmPopup, {
-                    title = "Delete Alias",
-                    message = "Delete '" .. (match.alias.label or "")
-                        .. "' and its characters?",
-                    confirmText = "Delete",
-                    onConfirm = function()
-                        PRT:DeleteRosterAlias(match.alias.id)
-                        RequestMatcherRefresh()
-                        if aliasPopup and aliasPopup:IsShown() then
-                            RequestAliasRefresh()
-                        end
-                    end,
-                })
-            end)
         else
+            row.deleteBtn._aliasId = nil
+            row.deleteBtn._aliasLabel = nil
             row.deleteBtn:Hide()
         end
 
@@ -1692,7 +1782,10 @@ local function RenderLowerSection(startY)
             row.server:SetText(manualLive.realm or "")
             row.confidence:SetText("Manual")
             row.confidence:SetTextColor(PRT.C.GREEN[1], PRT.C.GREEN[2], PRT.C.GREEN[3], 1)
-            SetAliasInputState(row.saveAlias, true, state.aliasText or "")
+            SetAliasInputState(
+                EnsureLowerAliasInput(row),
+                true,
+                state.aliasText or "")
         elseif lowerRow.suggestion then
             SetAliasCharacterText(row.matchTarget.label, lowerRow.suggestion.liveEntry.name, lowerRow.suggestion.liveEntry.classFile)
             row.server:SetText(lowerRow.suggestion.liveEntry.realm or "")
@@ -1702,14 +1795,18 @@ local function RenderLowerSection(startY)
             else
                 row.confidence:SetTextColor(PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3], 1)
             end
-            SetAliasInputState(row.saveAlias, false, "")
+            if row.saveAlias then
+                SetAliasInputState(row.saveAlias, false, "")
+            end
         else
             row.matchTarget.label:SetText("No match")
             row.matchTarget.label:SetTextColor(PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3], 1)
             row.server:SetText("-")
             row.confidence:SetText("0%")
             row.confidence:SetTextColor(PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3], 1)
-            SetAliasInputState(row.saveAlias, false, "")
+            if row.saveAlias then
+                SetAliasInputState(row.saveAlias, false, "")
+            end
         end
 
         row:Show()
@@ -1813,6 +1910,7 @@ MatcherRefresh = function(self)
     if not self._panel or not self._panel.selectedComp then
         return
     end
+    CountRosterMatcherDebug("refreshes")
 
     local analysis = PRT:BuildRosterMatchAnalysis(self._panel.selectedComp, nil, GetPanelRosterSnapshot(self._panel))
     if not analysis then
@@ -1844,13 +1942,7 @@ function PRT:OpenRosterMatcher(panel)
     matcherPopup._panel = panel
     BringPopupToFront(matcherPopup)
     matcherPopup:Show()
-    MatcherRefresh(matcherPopup)
-    C_Timer.After(0, function()
-        RequestMatcherRefresh()
-    end)
-    C_Timer.After(0.05, function()
-        RequestMatcherRefresh()
-    end)
+    RequestMatcherRefresh()
 end
 
 function PRT:RefreshRosterAliasPopup()
@@ -1859,4 +1951,41 @@ end
 
 function PRT:RefreshRosterMatcherPopup()
     RequestMatcherRefresh()
+end
+
+function PRT:GetRosterMatcherDebugSummary()
+    local analysis = matcherPopup and matcherPopup._analysis
+    local exactCount = CountTableEntries(
+        analysis and analysis.exactAssignments)
+    local lowerInputs = 0
+    if matcherPopup then
+        for _, row in ipairs(matcherPopup._lowerRows) do
+            if row.saveAlias then lowerInputs = lowerInputs + 1 end
+        end
+    end
+    return {
+        shown = matcherPopup and matcherPopup:IsShown() or false,
+        analysisRetained = analysis ~= nil,
+        imports = analysis
+            and (exactCount
+                + #(analysis.topMatches or {})
+                + #(analysis.lowerRows or {})) or 0,
+        live = analysis and #(analysis.liveEntries or {}) or 0,
+        top = analysis and #(analysis.topMatches or {}) or 0,
+        lower = analysis and #(analysis.lowerRows or {}) or 0,
+        unmatchedLive =
+            analysis and #(analysis.unmatchedLive or {}) or 0,
+        pooledTopRows =
+            matcherPopup and #matcherPopup._topRows or 0,
+        pooledLowerRows =
+            matcherPopup and #matcherPopup._lowerRows or 0,
+        lowerInputs = lowerInputs,
+        pooledPills =
+            matcherPopup and #matcherPopup._pillButtons or 0,
+        stateTop = matcherPopup
+            and CountTableEntries(matcherPopup._state.top) or 0,
+        stateLower = matcherPopup
+            and CountTableEntries(matcherPopup._state.lower) or 0,
+        aliasWindowCreated = aliasPopup ~= nil,
+    }
 end

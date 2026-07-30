@@ -296,7 +296,11 @@ function W.CreateSelectableButton(parent, text, opts)
     local normalText = opts.textColor or { 0.8, 0.8, 0.8, 1 }
     local selectedText = opts.selectedTextColor or (PRT.C.TITLE and { PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3], 1 } or normalText)
 
-    W.StyleBox(btn, bg, border)
+    if opts.noBorder then
+        W.AddBackground(btn, bg[1], bg[2], bg[3], bg[4])
+    else
+        W.StyleBox(btn, bg, border)
+    end
 
     btn.label = W.CreateLabel(btn, text or "", opts.fontSize or PRT.FONT_SIZE)
     if opts.labelPoint then
@@ -315,6 +319,7 @@ function W.CreateSelectableButton(parent, text, opts)
     btn._normalText = normalText
     btn._selectedText = selectedText
     btn._selected = false
+    btn._hasSelectableBorder = not opts.noBorder
     btn._mrtHoverAnimation = opts.hoverAnimation == "MRT"
     btn._mrtHoverHeight = opts.hoverAnimationHeight or btn:GetHeight()
 
@@ -409,11 +414,19 @@ function W.CreateSelectableButton(parent, text, opts)
         self._selected = isSelected and true or false
         if self._selected then
             ApplyBackground(self, self._selectedBg)
-            W.AddBorders(self, self._selectedBorder[1], self._selectedBorder[2], self._selectedBorder[3], self._selectedBorder[4] or 1)
+            if self._hasSelectableBorder then
+                W.AddBorders(self, self._selectedBorder[1],
+                    self._selectedBorder[2], self._selectedBorder[3],
+                    self._selectedBorder[4] or 1)
+            end
             self.label:SetTextColor(self._selectedText[1], self._selectedText[2], self._selectedText[3], self._selectedText[4] or 1)
         else
             ApplyBackground(self, self._normalBg)
-            W.AddBorders(self, self._normalBorder[1], self._normalBorder[2], self._normalBorder[3], self._normalBorder[4] or 1)
+            if self._hasSelectableBorder then
+                W.AddBorders(self, self._normalBorder[1],
+                    self._normalBorder[2], self._normalBorder[3],
+                    self._normalBorder[4] or 1)
+            end
             self.label:SetTextColor(self._normalText[1], self._normalText[2], self._normalText[3], self._normalText[4] or 1)
         end
     end
@@ -621,6 +634,19 @@ function W.AttachColorPicker(swatch, opts)
     local getColor = opts.getColor
     local setColor = opts.setColor
 
+    local function RaisePicker()
+        if ColorPickerFrame.SetToplevel then
+            ColorPickerFrame:SetToplevel(true)
+        end
+        if ColorPickerFrame.SetFrameStrata then
+            ColorPickerFrame:SetFrameStrata("TOOLTIP")
+        end
+        if ColorPickerFrame.SetFrameLevel then
+            ColorPickerFrame:SetFrameLevel(1000)
+        end
+        if ColorPickerFrame.Raise then ColorPickerFrame:Raise() end
+    end
+
     swatch:SetScript("OnClick", function()
         local r, g, b = getColor()
         local prev = { r, g, b }
@@ -637,7 +663,17 @@ function W.AttachColorPicker(swatch, opts)
             setColor(prev[1], prev[2], prev[3])
         end
         ColorPickerFrame:SetColorRGB(r, g, b)
+        RaisePicker()
         ColorPickerFrame:Show()
+        RaisePicker()
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, function()
+                if PRT._cpId == pickerId
+                    and ColorPickerFrame:IsShown() then
+                    RaisePicker()
+                end
+            end)
+        end
     end)
 
     ColorPickerFrame:HookScript("OnHide", function()
@@ -1498,204 +1534,406 @@ end
 ---------------------------------------------------------------------------
 -- Dropdown (custom, no UIDropDownMenu dependency)
 ---------------------------------------------------------------------------
+local DROPDOWN_ROW_HEIGHT = 20
+local DROPDOWN_TEXT_COLOR = { 1, 1, 1, 1 }
+local DROPDOWN_ROW_BG = { 0.05, 0.05, 0.05, 0 }
+local DROPDOWN_CLEAR_BORDER = { 0, 0, 0, 0 }
+local DROPDOWN_MENU_BG = { 0.05, 0.05, 0.05, 0.98 }
+
+-- Shared shell for dropdowns and other lightweight popup menus. Feature
+-- modules can keep their specialised layout/positioning without duplicating
+-- the frame styling and setup used by the standard dropdown.
+function W.CreateMenuFrame(parent, opts)
+    opts = opts or {}
+    local menu = CreateFrame("Frame", opts.name, parent or UIParent)
+    if opts.width or opts.height then
+        menu:SetSize(opts.width or 1, opts.height or 1)
+    end
+    if opts.strata then menu:SetFrameStrata(opts.strata) end
+    if opts.frameLevel then menu:SetFrameLevel(opts.frameLevel) end
+    if opts.clampedToScreen ~= nil then
+        menu:SetClampedToScreen(opts.clampedToScreen)
+    end
+    if opts.enableMouse ~= nil then menu:EnableMouse(opts.enableMouse) end
+    W.StyleBox(
+        menu,
+        opts.bgColor or DROPDOWN_MENU_BG,
+        opts.borderColor or PRT.C.BORDER)
+    if opts.hidden ~= false then menu:Hide() end
+    return menu
+end
+
+-- Standard dropdown items support text, value, textColor, icon, iconSize,
+-- iconTexCoord, and iconColor. Plain values are also accepted and displayed
+-- with tostring(value).
+local function DropdownItemValue(item)
+    if type(item) == "table" then return item.value end
+    return item
+end
+
+local function DropdownItemText(item)
+    if type(item) == "table" then
+        if item.text ~= nil then return tostring(item.text) end
+        if item.label ~= nil then return tostring(item.label) end
+        return tostring(item.value)
+    end
+    return tostring(item)
+end
+
+local function DropdownItemOption(item, key)
+    return type(item) == "table" and item[key] or nil
+end
+
+local function ApplyDropdownItemIcon(
+        container, label, item, leftInset, rightInset, defaultSize)
+    local texturePath = DropdownItemOption(item, "icon")
+    label:ClearAllPoints()
+    if texturePath then
+        local icon = container._dropdownItemIcon
+        if not icon then
+            icon = container:CreateTexture(nil, "OVERLAY")
+            container._dropdownItemIcon = icon
+        end
+        local iconSize = math.max(1,
+            tonumber(DropdownItemOption(item, "iconSize"))
+                or defaultSize or 14)
+        icon:ClearAllPoints()
+        icon:SetPoint("LEFT", leftInset, 0)
+        icon:SetSize(iconSize, iconSize)
+        icon:SetTexture(texturePath)
+        local texCoord = DropdownItemOption(item, "iconTexCoord")
+        if texCoord then
+            icon:SetTexCoord(unpack(texCoord))
+        else
+            icon:SetTexCoord(0, 1, 0, 1)
+        end
+        local iconColor = DropdownItemOption(item, "iconColor")
+        if iconColor then
+            icon:SetVertexColor(
+                iconColor[1], iconColor[2], iconColor[3],
+                iconColor[4] or 1)
+        else
+            icon:SetVertexColor(1, 1, 1, 1)
+        end
+        icon:Show()
+        label:SetPoint("LEFT", leftInset + iconSize + 4, 0)
+    else
+        local icon = container._dropdownItemIcon
+        if icon then icon:Hide() end
+        label:SetPoint("LEFT", leftInset, 0)
+    end
+    label:SetPoint("RIGHT", rightInset, 0)
+    label:SetJustifyH("LEFT")
+end
+
+-- Portable raid-marker item builder for any dropdown or other menu that uses
+-- the standard item contract above.
+function W.BuildRaidTargetDropdownItems(markIcons, opts)
+    opts = opts or {}
+    local result = {}
+    for _, marker in ipairs(markIcons or {}) do
+        local markerId = tonumber(marker.id) or 0
+        if markerId > 0 then
+            result[#result + 1] = {
+                text = marker.name or tostring(markerId),
+                value = markerId,
+                icon = string.format(
+                    "Interface\\TargetingFrame\\UI-RaidTargetingIcon_%d",
+                    markerId),
+                iconSize = opts.iconSize or 14,
+                iconTexCoord = opts.iconTexCoord,
+            }
+        elseif opts.includeClear ~= false then
+            result[#result + 1] = {
+                text = opts.clearText or marker.name or "Clear mark",
+                value = markerId,
+                textColor = opts.clearTextColor,
+            }
+        end
+    end
+    return result
+end
+
+local function FindDropdownMenuOwnerAndLevel(menu)
+    local dropdown = menu.ownerDropdown
+    if not dropdown then return nil, 0 end
+    local owner
+    local highestLevel = dropdown.GetFrameLevel
+        and dropdown:GetFrameLevel() or 0
+    local current = dropdown.GetParent and dropdown:GetParent() or nil
+    while current and current ~= UIParent do
+        if current.GetFrameLevel then
+            highestLevel = math.max(
+                highestLevel, current:GetFrameLevel())
+        end
+        if not owner and current.BringToFront then owner = current end
+        current = current.GetParent and current:GetParent() or nil
+    end
+    return owner, highestLevel
+end
+
+local function RaiseDropdownMenu(menu)
+    if not menu:IsShown() then return end
+    local owner, highestLevel = FindDropdownMenuOwnerAndLevel(menu)
+    menu._popupOwner = owner
+    if owner then
+        local previous = owner._activeDropdownMenu
+        if previous and previous ~= menu
+            and previous.IsShown and previous:IsShown() then
+            previous:Hide()
+        end
+        owner._activeDropdownMenu = menu
+    end
+    if menu.SetToplevel then menu:SetToplevel(true) end
+    menu:SetFrameStrata("TOOLTIP")
+    menu:SetFrameLevel(highestLevel + 100)
+    if menu.Raise then menu:Raise() end
+end
+
+local function DropdownRowClicked(row)
+    local dropdown = row._dropdown
+    local item = row._dropdownItem
+    if not dropdown or not item then return end
+    if DropdownItemOption(item, "disabled") then return end
+
+    local value = DropdownItemValue(item)
+    local text = DropdownItemText(item)
+    dropdown:SetSelected(value)
+    dropdown.menu:Hide()
+    if dropdown.onSelect then
+        dropdown.onSelect(value, text, item, dropdown)
+    end
+end
+
+local function RefreshDropdownMenu(menu)
+    local dropdown = menu.ownerDropdown
+    if not dropdown then return end
+    local opts = dropdown._dropdownOptions
+    local rowHeight = math.max(1,
+        tonumber(opts.rowHeight) or DROPDOWN_ROW_HEIGHT)
+    local hoverAnimation = opts.hoverAnimation
+    if hoverAnimation == nil then hoverAnimation = "MRT" end
+    local textColorFallback = opts.textColor or DROPDOWN_TEXT_COLOR
+
+    menu:SetWidth(opts.menuWidth or dropdown:GetWidth())
+    for _, row in ipairs(menu.rows) do row:Hide() end
+
+    local height = 0
+    for index, item in ipairs(dropdown.items) do
+        local row = menu.rows[index]
+        if not row then
+            row = W.CreateSelectableButton(menu, "", {
+                width = opts.menuWidth or dropdown:GetWidth(),
+                height = rowHeight,
+                bgColor = DROPDOWN_ROW_BG,
+                borderColor = DROPDOWN_CLEAR_BORDER,
+                noBorder = true,
+                textColor = DROPDOWN_TEXT_COLOR,
+                selectedTextColor = DROPDOWN_TEXT_COLOR,
+                labelPoint = { "LEFT", 8, 0 },
+                justifyH = "LEFT",
+                hoverAnimation = hoverAnimation,
+                hoverAnimationHeight = rowHeight,
+            })
+            row.text = row.label
+            row:SetScript("OnClick", DropdownRowClicked)
+            menu.rows[index] = row
+        end
+
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", 0, -height)
+        row:SetPoint("TOPRIGHT", 0, -height)
+        row:SetHeight(rowHeight)
+        row._mrtHoverAnimation = hoverAnimation == "MRT"
+        row:SetHoverAnimationHeight(rowHeight)
+        row._dropdown = dropdown
+        row._dropdownItem = item
+        row.value = DropdownItemValue(item)
+        row.text:SetText(DropdownItemText(item))
+
+        local textColor = DropdownItemOption(item, "textColor")
+            or textColorFallback
+        row._normalText = textColor
+        row._selectedText = textColor
+        row:SetSelected(false)
+        ApplyDropdownItemIcon(
+            row, row.text, item, 8, -8, opts.iconSize or 14)
+        row:ResetHoverAnimation()
+
+        local disabled = DropdownItemOption(item, "disabled")
+        if disabled then
+            row:Disable()
+            row:SetAlpha(0.45)
+        else
+            row:Enable()
+            row:SetAlpha(1)
+        end
+        row:Show()
+        height = height + rowHeight
+    end
+    menu:SetHeight(math.max(height, 1))
+end
+
+local function DropdownMenuShown(menu)
+    RaiseDropdownMenu(menu)
+    C_Timer.After(0, menu._deferredRaise)
+    C_Timer.After(0.05, menu._deferredRaise)
+    RefreshDropdownMenu(menu)
+end
+
+local function DropdownMenuHidden(menu)
+    local owner = menu._popupOwner
+    if owner and owner._activeDropdownMenu == menu then
+        owner._activeDropdownMenu = nil
+    end
+    menu._popupOwner = nil
+    menu.ownerDropdown = nil
+end
+
+-- A menu can be shared by many dropdown controls. This is useful for pooled
+-- table cells (such as Target Marks) and avoids retaining one menu and row
+-- collection per control.
+function W.CreateDropdownMenu(opts)
+    opts = opts or {}
+    local menu = W.CreateMenuFrame(opts.parent or UIParent, {
+        name = opts.name,
+        strata = opts.strata or "TOOLTIP",
+        clampedToScreen = opts.clampedToScreen ~= false,
+        bgColor = opts.bgColor or DROPDOWN_MENU_BG,
+        borderColor = opts.borderColor or PRT.C.BORDER,
+    })
+    menu.rows = {}
+    menu._deferredRaise = function()
+        if menu.IsShown and menu:IsShown() then RaiseDropdownMenu(menu) end
+    end
+    menu._raiseAboveOwner = RaiseDropdownMenu
+    menu:SetScript("OnShow", DropdownMenuShown)
+    menu:SetScript("OnHide", DropdownMenuHidden)
+    return menu
+end
+
+local function DropdownMouseUp(dropdown)
+    local menu = dropdown.menu
+    if menu:IsShown() then
+        if menu.ownerDropdown == dropdown then
+            menu:Hide()
+            return
+        end
+        menu:Hide()
+    end
+
+    if dropdown.onBeforeOpen then dropdown.onBeforeOpen(dropdown) end
+    menu.ownerDropdown = dropdown
+    menu:ClearAllPoints()
+    local positionMenu = dropdown._dropdownOptions.positionMenu
+    if positionMenu then
+        positionMenu(dropdown, menu)
+    else
+        menu:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 0, -1)
+    end
+    menu:Show()
+end
+
+local function DropdownHidden(dropdown)
+    local menu = dropdown.menu
+    if menu and menu.ownerDropdown == dropdown then menu:Hide() end
+end
+
 function W.CreateDropdown(parent, width, items, onSelect, opts)
-    -- items = { { text="X", value=v }, ... }
     opts = opts or {}
     local dd = CreateFrame("Frame", nil, parent)
-    dd:SetSize(width or 180, 24)
-    W.StyleBox(dd, PRT.C.INPUT_BG, PRT.C.BORDER)
+    dd:SetSize(width or 180, opts.height or 24)
+    W.StyleBox(
+        dd,
+        opts.bgColor or PRT.C.INPUT_BG,
+        opts.borderColor or PRT.C.BORDER)
 
     dd.selectedValue = nil
     dd.items = items or {}
+    dd.onSelect = onSelect
+    dd.onBeforeOpen = opts.onBeforeOpen
+    dd._dropdownOptions = opts
 
-    dd.label = W.CreateLabel(dd, "", PRT.FONT_SIZE, 1, 1, 1)
-    dd.label:SetPoint("LEFT", 8, 0)
-    dd.label:SetPoint("RIGHT", -20, 0)
-    dd.label:SetJustifyH("LEFT")
+    dd.label = W.CreateLabel(
+        dd, "", opts.fontSize or PRT.FONT_SIZE, 1, 1, 1)
+    ApplyDropdownItemIcon(dd, dd.label, nil, 8, -20, opts.iconSize or 14)
 
-    local arrow = W.CreateLabel(dd, "v", PRT.FONT_SIZE, PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3])
-    arrow:SetPoint("RIGHT", -6, 0)
+    dd.arrow = W.CreateLabel(
+        dd, opts.arrowText or "v", opts.fontSize or PRT.FONT_SIZE,
+        PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3])
+    dd.arrow:SetPoint("RIGHT", -6, 0)
 
-    -- menu frame parented to UIParent so it is always top-level and cannot
-    -- be obscured by sibling or descendant frames inside the panel hierarchy.
-    dd.menu = CreateFrame("Frame", nil, UIParent)
-    dd.menu:SetFrameStrata("TOOLTIP")
-    dd.menu:SetClampedToScreen(true)
-    dd.menu:Hide()
+    dd.menu = opts.sharedMenu or W.CreateDropdownMenu(opts.menuOptions)
 
-    local function FindMenuOwnerAndLevel()
-        local owner
-        local highestLevel =
-            dd.GetFrameLevel and dd:GetFrameLevel() or 0
-        local current = dd.GetParent and dd:GetParent() or nil
-        while current and current ~= UIParent do
-            if current.GetFrameLevel then
-                highestLevel =
-                    math.max(highestLevel, current:GetFrameLevel())
-            end
-            if not owner and current.BringToFront then
-                owner = current
-            end
-            current = current.GetParent and current:GetParent() or nil
-        end
-        return owner, highestLevel
-    end
-
-    local function RaiseMenuAboveOwner()
-        if not dd.menu:IsShown() then return end
-        local owner, highestLevel = FindMenuOwnerAndLevel()
-        dd._menuOwner = owner
-        if owner then
-            local previous = owner._activeDropdownMenu
-            if previous and previous ~= dd.menu
-                and previous.IsShown and previous:IsShown() then
-                previous:Hide()
-            end
-            owner._activeDropdownMenu = dd.menu
-        end
-        if dd.menu.SetToplevel then
-            dd.menu:SetToplevel(true)
-        end
-        dd.menu:SetFrameStrata("TOOLTIP")
-        dd.menu:SetFrameLevel(highestLevel + 100)
-        if dd.menu.Raise then dd.menu:Raise() end
-    end
-    dd.menu._raiseAboveOwner = RaiseMenuAboveOwner
-
-    dd.menu:SetScript("OnShow", function(self)
-        RaiseMenuAboveOwner()
-        C_Timer.After(0, function()
-            if self and self.IsShown and self:IsShown() then
-                RaiseMenuAboveOwner()
-            end
-        end)
-        C_Timer.After(0.05, function()
-            if self and self.IsShown and self:IsShown() then
-                RaiseMenuAboveOwner()
-            end
-        end)
-        self:SetWidth(dd:GetWidth())
-        -- rebuild children
-        for _, child in ipairs(self.rows or {}) do child:Hide() end
-        self.rows = self.rows or {}
-        local h = 0
-        for i, item in ipairs(dd.items) do
-            local row = self.rows[i]
-            if not row then
-                if opts.hoverAnimation == "MRT" then
-                    row = W.CreateSelectableButton(self, "", {
-                        width = width or 180,
-                        height = 20,
-                        bgColor = { 0.05, 0.05, 0.05, 0 },
-                        borderColor = { 0, 0, 0, 0 },
-                        textColor = { 1, 1, 1, 1 },
-                        labelPoint = { "LEFT", 8, 0 },
-                        justifyH = "LEFT",
-                        hoverAnimation = "MRT",
-                        hoverAnimationHeight = 20,
-                    })
-                    row.text = row.label
-                else
-                    row = CreateFrame("Button", nil, self)
-                    row:SetHeight(20)
-                    W.AddBackground(
-                        row, 0.05, 0.05, 0.05, 0.98)
-                    row.text = W.CreateLabel(
-                        row, "", PRT.FONT_SIZE, 1, 1, 1)
-                    row.text:SetPoint("LEFT", 8, 0)
-                    row.text:SetJustifyH("LEFT")
-                    row:SetScript("OnEnter", function(r)
-                        r._bgTex:SetColorTexture(
-                            PRT.C.SIDEBAR_SEL[1],
-                            PRT.C.SIDEBAR_SEL[2],
-                            PRT.C.SIDEBAR_SEL[3],
-                            PRT.C.SIDEBAR_SEL[4])
-                    end)
-                    row:SetScript("OnLeave", function(r)
-                        r._bgTex:SetColorTexture(0, 0, 0, 0)
-                    end)
-                end
-                self.rows[i] = row
-            end
-            row:SetPoint("TOPLEFT", 0, -h)
-            row:SetPoint("TOPRIGHT", 0, -h)
-            row.text:SetText(item.text)
-            local textColor =
-                item.textColor or opts.textColor or { 1, 1, 1, 1 }
-            row.text:SetTextColor(
-                textColor[1], textColor[2], textColor[3],
-                textColor[4] or 1)
-            if row._normalText then
-                row._normalText = textColor
-                row._selectedText = textColor
-            end
-            if row.ResetHoverAnimation then
-                row:ResetHoverAnimation()
-            end
-            row.value = item.value
-            row:SetScript("OnClick", function(r)
-                dd:SetSelected(r.value, item.text)
-                self:Hide()
-                if onSelect then onSelect(r.value, item.text) end
-            end)
-            row:Show()
-            h = h + 20
-        end
-        self:SetHeight(math.max(h, 1))
-    end)
-    W.StyleBox(dd.menu, { 0.05, 0.05, 0.05, 0.98 }, PRT.C.BORDER)
-
-    -- toggle on click
     dd:EnableMouse(true)
-    dd:SetScript("OnMouseUp", function()
-        if dd.menu:IsShown() then
-            dd.menu:Hide()
-        else
-            dd.menu:ClearAllPoints()
-            dd.menu:SetPoint("TOPLEFT", dd, "BOTTOMLEFT", 0, -1)
-            dd.menu:Show()
-        end
-    end)
-
-    -- close when clicking elsewhere
-    dd.menu:SetScript("OnHide", function(self)
-        local owner = dd._menuOwner
-        if owner and owner._activeDropdownMenu == self then
-            owner._activeDropdownMenu = nil
-        end
-        dd._menuOwner = nil
-    end)
-    dd:SetScript("OnHide", function() dd.menu:Hide() end)
+    dd:SetScript("OnMouseUp", DropdownMouseUp)
+    dd:SetScript("OnHide", DropdownHidden)
 
     function dd:SetSelected(value, text)
         self.selectedValue = value
         local selectedItem
         for _, item in ipairs(self.items) do
-            if item.value == value then
+            if DropdownItemValue(item) == value then
                 selectedItem = item
                 break
             end
         end
-        if text then
-            self.label:SetText(text)
+        if text ~= nil then
+            self.label:SetText(tostring(text))
         elseif selectedItem then
-            self.label:SetText(selectedItem.text)
+            self.label:SetText(DropdownItemText(selectedItem))
         else
             self.label:SetText(tostring(value))
         end
-        local textColor = selectedItem and selectedItem.textColor
-            or opts.textColor or { 1, 1, 1, 1 }
+        local textColor = DropdownItemOption(selectedItem, "textColor")
+            or opts.textColor or DROPDOWN_TEXT_COLOR
         self.label:SetTextColor(
             textColor[1], textColor[2], textColor[3],
             textColor[4] or 1)
+        ApplyDropdownItemIcon(
+            self, self.label, selectedItem, 8, -20,
+            opts.iconSize or 14)
     end
 
     function dd:GetSelected()
         return self.selectedValue
     end
 
+    function dd:GetSelectedItem()
+        for _, item in ipairs(self.items) do
+            if DropdownItemValue(item) == self.selectedValue then
+                return item
+            end
+        end
+    end
+
     function dd:SetItems(newItems)
         self.items = newItems or {}
+        if self.selectedValue ~= nil then
+            self:SetSelected(self.selectedValue)
+        end
+        if self.menu:IsShown() and self.menu.ownerDropdown == self then
+            RefreshDropdownMenu(self.menu)
+        end
+    end
+
+    function dd:SetOnSelect(callback)
+        self.onSelect = callback
+    end
+
+    function dd:SetOnBeforeOpen(callback)
+        self.onBeforeOpen = callback
+    end
+
+    function dd:OpenMenu()
+        if not self.menu:IsShown()
+            or self.menu.ownerDropdown ~= self then
+            DropdownMouseUp(self)
+        end
+    end
+
+    function dd:CloseMenu()
+        if self.menu.ownerDropdown == self then self.menu:Hide() end
     end
 
     return dd
@@ -1893,7 +2131,9 @@ function PRT:ShowNotification(text, opts)
     if not self._notifFrame then
         local nf = CreateFrame("Frame", "PRT_NotifFrame", UIParent)
         nf:SetSize(800, 120)
-        nf:SetFrameStrata("HIGH")
+        nf:SetFrameStrata("TOOLTIP")
+        nf:SetFrameLevel(1000)
+        if nf.SetToplevel then nf:SetToplevel(true) end
         nf:SetClampedToScreen(false)
         nf.label = nf:CreateFontString(nil, "OVERLAY")
         nf.label:SetPoint("CENTER")
@@ -1903,7 +2143,11 @@ function PRT:ShowNotification(text, opts)
     end
 
     local nf = self._notifFrame
-    local fc = opts.color or cfg.fontColor or { 1.0, 0.82, 0.0 }
+    nf:SetFrameStrata("TOOLTIP")
+    nf:SetFrameLevel(1000)
+    if nf.SetToplevel then nf:SetToplevel(true) end
+    if nf.Raise then nf:Raise() end
+    local fc = opts.color or cfg.fontColor or PRT.C.SETTINGS_FONT
     local fs = opts.fontSize or cfg.fontSize or 32
 
     nf.label:SetFont(PRT.FONT, fs, "OUTLINE")

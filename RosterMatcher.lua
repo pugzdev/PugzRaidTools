@@ -2,9 +2,141 @@
 -- PugzRaidTools - Roster Matcher / Alias Database
 -- Realm-aware alias storage and on-demand roster reconciliation helpers.
 ---------------------------------------------------------------------------
-local _, PRT = ...
+local addonName, PRT = ...
 
 local UNKNOWN_CLASS = ""
+
+local rosterMatcherMemoryDebug = {
+    enabled = false,
+    counters = {},
+    baseline = nil,
+}
+
+local function CountRosterMatcherDebug(key, amount)
+    if not rosterMatcherMemoryDebug.enabled then return end
+    local counters = rosterMatcherMemoryDebug.counters
+    counters[key] = (counters[key] or 0) + (amount or 1)
+end
+
+local function CaptureRosterMatcherMemory(forceGC)
+    local luaHeapKB
+    if type(collectgarbage) == "function" then
+        if forceGC then pcall(collectgarbage, "collect") end
+        local ok, value = pcall(collectgarbage, "count")
+        if ok then luaHeapKB = tonumber(value) end
+    end
+    if type(UpdateAddOnMemoryUsage) == "function" then
+        UpdateAddOnMemoryUsage()
+    end
+    local addonKB = type(GetAddOnMemoryUsage) == "function"
+        and tonumber(GetAddOnMemoryUsage(
+            addonName or "PugzRaidTools")) or nil
+    return {
+        addonKB = addonKB,
+        luaHeapKB = luaHeapKB,
+    }
+end
+
+function PRT:CountRosterMatcherDebug(key, amount)
+    CountRosterMatcherDebug(key, amount)
+end
+
+function PRT:GetRosterMatcherDebugCounters()
+    return rosterMatcherMemoryDebug.counters
+end
+
+function PRT:SetRosterMatcherMemoryDebug(enabled)
+    enabled = enabled and true or false
+    if enabled then
+        rosterMatcherMemoryDebug.enabled = true
+        rosterMatcherMemoryDebug.counters = {}
+        rosterMatcherMemoryDebug.baseline =
+            CaptureRosterMatcherMemory(false)
+        PRT.Print(
+            "Auto Match memory debug enabled. Open and close Auto Match, "
+            .. "then use /prt debugui match [gc].")
+        return
+    end
+
+    if rosterMatcherMemoryDebug.enabled then
+        self:DumpRosterMatcherMemoryDebug(false, "final")
+    end
+    rosterMatcherMemoryDebug.enabled = false
+    rosterMatcherMemoryDebug.baseline = nil
+    PRT.Print("Auto Match memory debug disabled.")
+end
+
+function PRT:DumpRosterMatcherMemoryDebug(forceGC, label)
+    local snapshot = CaptureRosterMatcherMemory(forceGC)
+    local baseline = rosterMatcherMemoryDebug.baseline or snapshot
+    local addonDelta = snapshot.addonKB and baseline.addonKB
+        and snapshot.addonKB - baseline.addonKB or nil
+    local luaDelta = snapshot.luaHeapKB and baseline.luaHeapKB
+        and snapshot.luaHeapKB - baseline.luaHeapKB or nil
+    local counters = rosterMatcherMemoryDebug.counters
+
+    PRT.Print(("AUTO MATCH MEMORY %s%s addon=%s delta=%s "
+        .. "luaHeap(all addons)=%s delta=%s"):format(
+        tostring(label or "snapshot"),
+        forceGC and " after-GC" or "",
+        snapshot.addonKB
+            and ("%.1fKB"):format(snapshot.addonKB) or "unavailable",
+        addonDelta and ("%+.1fKB"):format(addonDelta) or "unavailable",
+        snapshot.luaHeapKB
+            and ("%.1fKB"):format(snapshot.luaHeapKB) or "unavailable",
+        luaDelta and ("%+.1fKB"):format(luaDelta) or "unavailable"))
+    PRT.Print(("analysis builds=%d candidates=%d candidateTables=%d "
+        .. "aliasHitScans=%d aliasHitTables=%d"):format(
+        counters.analysisBuilds or 0,
+        counters.candidateEvaluations or 0,
+        counters.candidateTablesCreated or 0,
+        counters.aliasHitScans or 0,
+        counters.aliasHitTablesCreated or 0))
+    PRT.Print(("analyzed imports=%d live=%d unresolved=%d strongPairs=%d "
+        .. "top=%d lower=%d unmatchedLive=%d"):format(
+        counters.importEntries or 0,
+        counters.liveEntries or 0,
+        counters.unresolvedImports or 0,
+        counters.strongPairs or 0,
+        counters.topMatches or 0,
+        counters.lowerRows or 0,
+        counters.unmatchedLive or 0))
+    PRT.Print(("UI refreshRequests=%d refreshes=%d cleanups=%d "
+        .. "created matcherWindows=%d aliasWindows=%d "
+        .. "topRows=%d lowerRows=%d lowerInputs=%d pills=%d"):format(
+        counters.refreshRequests or 0,
+        counters.refreshes or 0,
+        counters.windowCleanups or 0,
+        counters.matcherWindowsCreated or 0,
+        counters.aliasWindowsCreated or 0,
+        counters.topRowsCreated or 0,
+        counters.lowerRowsCreated or 0,
+        counters.lowerAliasInputsCreated or 0,
+        counters.pillButtonsCreated or 0))
+
+    if self.GetRosterMatcherDebugSummary then
+        local summary = self:GetRosterMatcherDebugSummary()
+        PRT.Print(("current shown=%s analysisRetained=%s imports=%d "
+            .. "live=%d top=%d lower=%d unmatchedLive=%d "
+            .. "pooledTopRows=%d pooledLowerRows=%d lowerInputs=%d "
+            .. "pooledPills=%d "
+            .. "stateTop=%d stateLower=%d aliasWindowCreated=%s"):format(
+            tostring(summary.shown),
+            tostring(summary.analysisRetained),
+            summary.imports or 0,
+            summary.live or 0,
+            summary.top or 0,
+            summary.lower or 0,
+            summary.unmatchedLive or 0,
+            summary.pooledTopRows or 0,
+            summary.pooledLowerRows or 0,
+            summary.lowerInputs or 0,
+            summary.pooledPills or 0,
+            summary.stateTop or 0,
+            summary.stateLower or 0,
+            tostring(summary.aliasWindowCreated)))
+    end
+end
 
 local CHAR_FOLD = {
     ["À"] = "A", ["Á"] = "A", ["Â"] = "A", ["Ã"] = "A", ["Ä"] = "A", ["Å"] = "A",
@@ -119,13 +251,16 @@ local function CommonPrefixLength(a, b)
     return idx
 end
 
+local levenshteinPrevious = {}
+local levenshteinCurrent = {}
+
 local function Levenshtein(a, b)
     local lenA, lenB = #a, #b
     if lenA == 0 then return lenB end
     if lenB == 0 then return lenA end
 
-    local prev = {}
-    local curr = {}
+    local prev = levenshteinPrevious
+    local curr = levenshteinCurrent
     for j = 0, lenB do
         prev[j] = j
     end
@@ -140,11 +275,11 @@ local function Levenshtein(a, b)
             local sub = prev[j - 1] + cost
             curr[j] = math.min(del, ins, sub)
         end
-        for j = 0, lenB do
-            prev[j] = curr[j]
-        end
+        prev, curr = curr, prev
     end
 
+    levenshteinPrevious = prev
+    levenshteinCurrent = curr
     return prev[lenB]
 end
 
@@ -346,6 +481,7 @@ local function AddParsedAlias(importData, aliasData)
 end
 
 local function FindAliasImportHits(importEntry)
+    CountRosterMatcherDebug("aliasHitScans")
     local rm = EnsureMatcherDB()
     local hits = {}
 
@@ -362,6 +498,7 @@ local function FindAliasImportHits(importEntry)
             end
         end
         if strength then
+            CountRosterMatcherDebug("aliasHitTablesCreated")
             hits[#hits + 1] = {
                 alias = alias,
                 strength = strength,
@@ -384,8 +521,9 @@ local function GetAliasLiveStrength(alias, liveEntry)
     return best
 end
 
-local function EvaluateCandidate(importEntry, liveEntry)
-    local aliasHits = FindAliasImportHits(importEntry)
+local function EvaluateCandidate(importEntry, liveEntry, aliasHits)
+    CountRosterMatcherDebug("candidateEvaluations")
+    aliasHits = aliasHits or FindAliasImportHits(importEntry)
     local bestAlias, bestRank
 
     for _, aliasHit in ipairs(aliasHits) do
@@ -400,6 +538,7 @@ local function EvaluateCandidate(importEntry, liveEntry)
     end
 
     if bestAlias then
+        CountRosterMatcherDebug("candidateTablesCreated")
         return {
             importEntry = importEntry,
             liveEntry = liveEntry,
@@ -418,6 +557,7 @@ local function EvaluateCandidate(importEntry, liveEntry)
         return nil
     end
 
+    CountRosterMatcherDebug("candidateTablesCreated")
     return {
         importEntry = importEntry,
         liveEntry = liveEntry,
@@ -466,30 +606,32 @@ local function AssignUniqueExact(importEntries, liveEntries)
 
     for _, importEntry in ipairs(importEntries) do
         if importEntry.strictRealmNorm ~= "" then
-            local matches = {}
+            local matchIndex, matchCount
             for liveIndex, liveEntry in ipairs(liveEntries) do
                 if not assignedLives[liveIndex] and liveEntry.strictFullNorm == importEntry.strictFullNorm then
-                    matches[#matches + 1] = liveIndex
+                    matchIndex = liveIndex
+                    matchCount = (matchCount or 0) + 1
                 end
             end
-            if #matches == 1 then
-                assignedSlots[importEntry.slotIndex] = matches[1]
-                assignedLives[matches[1]] = true
+            if matchCount == 1 then
+                assignedSlots[importEntry.slotIndex] = matchIndex
+                assignedLives[matchIndex] = true
             end
         end
     end
 
     for _, importEntry in ipairs(importEntries) do
         if not assignedSlots[importEntry.slotIndex] then
-            local matches = {}
+            local matchIndex, matchCount
             for liveIndex, liveEntry in ipairs(liveEntries) do
                 if not assignedLives[liveIndex] and liveEntry.strictBaseNorm == importEntry.strictBaseNorm then
-                    matches[#matches + 1] = liveIndex
+                    matchIndex = liveIndex
+                    matchCount = (matchCount or 0) + 1
                 end
             end
-            if #matches == 1 then
-                assignedSlots[importEntry.slotIndex] = matches[1]
-                assignedLives[matches[1]] = true
+            if matchCount == 1 then
+                assignedSlots[importEntry.slotIndex] = matchIndex
+                assignedLives[matchIndex] = true
             end
         end
     end
@@ -1197,6 +1339,7 @@ function PRT:FindAliasesByCharacterQuery(query)
 end
 
 function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverride)
+    CountRosterMatcherDebug("analysisBuilds")
     local comp = self:GetComp(compName)
     if not comp then
         return nil, "No composition selected."
@@ -1210,6 +1353,8 @@ function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverrid
         roster = rosterOverride or comp.roster,
     })
     local liveEntries = self:GetDetailedRaidRoster()
+    CountRosterMatcherDebug("importEntries", #importEntries)
+    CountRosterMatcherDebug("liveEntries", #liveEntries)
     local assignedSlots, assignedLives = AssignUniqueExact(importEntries, liveEntries)
 
     local unresolvedImports = {}
@@ -1218,12 +1363,25 @@ function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverrid
             unresolvedImports[#unresolvedImports + 1] = importEntry
         end
     end
+    CountRosterMatcherDebug("unresolvedImports", #unresolvedImports)
+
+    -- Alias membership depends only on the imported slot, not on each live
+    -- candidate. Compute it once per unresolved import instead of allocating
+    -- a fresh hit list for every pair comparison.
+    local aliasHitsBySlot = {}
+    for _, importEntry in ipairs(unresolvedImports) do
+        aliasHitsBySlot[importEntry.slotIndex] =
+            FindAliasImportHits(importEntry)
+    end
 
     local strongPairs = {}
     for _, importEntry in ipairs(unresolvedImports) do
         for liveIndex, liveEntry in ipairs(liveEntries) do
             if not assignedLives[liveIndex] then
-                local candidate = EvaluateCandidate(importEntry, liveEntry)
+                local candidate = EvaluateCandidate(
+                    importEntry,
+                    liveEntry,
+                    aliasHitsBySlot[importEntry.slotIndex])
                 if candidate and (candidate.knownAlias or candidate.confidence >= threshold) then
                     candidate.liveIndex = liveIndex
                     strongPairs[#strongPairs + 1] = candidate
@@ -1231,6 +1389,7 @@ function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverrid
             end
         end
     end
+    CountRosterMatcherDebug("strongPairs", #strongPairs)
 
     table.sort(strongPairs, function(a, b)
         if a.rank ~= b.rank then
@@ -1256,6 +1415,7 @@ function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverrid
     table.sort(topMatches, function(a, b)
         return a.importEntry.slotIndex < b.importEntry.slotIndex
     end)
+    CountRosterMatcherDebug("topMatches", #topMatches)
 
     local lowerRows = {}
     for _, importEntry in ipairs(unresolvedImports) do
@@ -1263,7 +1423,10 @@ function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverrid
             local bestCandidate
             for liveIndex, liveEntry in ipairs(liveEntries) do
                 if not assignedLives[liveIndex] and not strongUsedLives[liveIndex] then
-                    local candidate = EvaluateCandidate(importEntry, liveEntry)
+                    local candidate = EvaluateCandidate(
+                        importEntry,
+                        liveEntry,
+                        aliasHitsBySlot[importEntry.slotIndex])
                     if candidate then
                         candidate.liveIndex = liveIndex
                         if (not bestCandidate) or candidate.rank > bestCandidate.rank then
@@ -1279,6 +1442,7 @@ function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverrid
             }
         end
     end
+    CountRosterMatcherDebug("lowerRows", #lowerRows)
 
     local unmatchedLive = {}
     for liveIndex, liveEntry in ipairs(liveEntries) do
@@ -1296,6 +1460,7 @@ function PRT:BuildRosterMatchAnalysis(compName, thresholdOverride, rosterOverrid
         end
         return a.liveEntry.name < b.liveEntry.name
     end)
+    CountRosterMatcherDebug("unmatchedLive", #unmatchedLive)
 
     return {
         compName = compName,

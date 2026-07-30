@@ -11,8 +11,6 @@ local DEFAULT_COLUMN_WIDTH = 40
 local MINI_COLUMN_WIDTH = 128
 local MINI_ROW_HEIGHT = 14
 local MINI_COLUMNS = 4
-local MAX_ROWS = 40
-local MAX_COLUMNS = 22
 local MAX_CATEGORY_ICONS = 6
 local COUNT_LABEL_WIDTH = 14
 local COUNT_LABEL_GAP = 1
@@ -28,6 +26,57 @@ local VALID_FRAME_STRATA = {
     FULLSCREEN_DIALOG = true,
     TOOLTIP = true,
 }
+
+local AttachRightClickDismiss
+local EnsureMiniMember
+local BuildResultCellTooltip
+local BuildAuraSlotTooltip
+local HandleRaidCheckIconClick
+local RaidCheckIconTooltipLines
+local ResultRowTooltipLines
+local PlayerHeaderTooltipLines
+
+local function CountRaidCheckDebug(key, amount)
+    if PRT.CountRaidCheckDebug then
+        PRT:CountRaidCheckDebug(key, amount)
+    end
+end
+
+local function ShowRaidCheckTooltip(frame)
+    local builder = frame._raidCheckTooltipBuilder
+    if not builder then return end
+    GameTooltip:SetOwner(
+        frame, frame._raidCheckTooltipAnchor or "ANCHOR_TOP")
+    GameTooltip:ClearLines()
+    for _, line in ipairs(builder(frame) or {}) do
+        if type(line) == "table" then
+            GameTooltip:AddLine(
+                line[1] or "",
+                line[2] or 1,
+                line[3] or 1,
+                line[4] or 1,
+                line[5])
+        else
+            GameTooltip:AddLine(line, 1, 1, 1, 1)
+        end
+    end
+    GameTooltip:Show()
+end
+
+local function HideRaidCheckTooltip()
+    if GameTooltip.SetMinimumWidth then
+        GameTooltip:SetMinimumWidth(0)
+    end
+    GameTooltip:Hide()
+end
+
+local function AttachRaidCheckTooltip(frame, builder, anchor)
+    CountRaidCheckDebug("tooltipTargetsAttached")
+    frame._raidCheckTooltipBuilder = builder
+    frame._raidCheckTooltipAnchor = anchor or "ANCHOR_TOP"
+    frame:HookScript("OnEnter", ShowRaidCheckTooltip)
+    frame:HookScript("OnLeave", HideRaidCheckTooltip)
+end
 
 local function NormalizeFrameStrata(value)
     return VALID_FRAME_STRATA[value] and value or "FULLSCREEN_DIALOG"
@@ -161,6 +210,89 @@ local function SendColumnClick(
         })
 end
 
+local function HandleHeaderCellMouseUp(cell, button)
+    SendColumnClick(
+        cell._popup, cell._column, nil, button)
+end
+
+local function HandleResultCellMouseUp(cell, button)
+    SendColumnClick(
+        cell._popup,
+        cell._column,
+        cell._member,
+        button)
+end
+
+local function HandleResultRowMouseUp(row, button)
+    SendColumnClick(
+        row._popup, nil, row.member, button)
+end
+
+local function HandleMiniMemberMouseUp(mini, button)
+    SendColumnClick(
+        mini._popup, nil, mini._member, button)
+end
+
+local function HandlePlayerHeaderClick(buttonFrame, button)
+    SendColumnClick(buttonFrame._popup, nil, nil, button)
+end
+
+HandleRaidCheckIconClick = function(hit, button)
+    local slot = hit._raidCheckIconSlot
+    local cell = slot and slot.cell
+    if not slot or not cell then return end
+    if button == "RightButton" then
+        local popup = cell._popup
+        local cfg = PRT:GetDB().raidCheck or {}
+        if popup and cfg.dismissOnRightClick ~= false then
+            popup:Hide()
+        end
+        return
+    end
+    SendColumnClick(
+        cell._popup,
+        slot._column,
+        cell._member,
+        button,
+        slot._aura)
+end
+
+RaidCheckIconTooltipLines = function(hit)
+    local slot = hit._raidCheckIconSlot
+    return slot and BuildAuraSlotTooltip
+        and BuildAuraSlotTooltip(slot) or {}
+end
+
+ResultRowTooltipLines = function(row)
+    local member = row.member
+    if not member then return {} end
+    return {
+        { member.displayName or member.name or "", 1, 1, 1 },
+        {
+            ("Group %d%s"):format(
+                member.subgroup or 1,
+                member.dead and " - Dead" or ""),
+            0.78, 0.78, 0.78,
+        },
+        {
+            member.connected and "Online" or "Offline",
+            member.connected and 0.45 or 1,
+            member.connected and 0.9 or 0.35,
+            member.connected and 0.45 or 0.35,
+        },
+    }
+end
+
+PlayerHeaderTooltipLines = function()
+    return {
+        { "Player List", 1, 1, 1 },
+        {
+            "Left-click to report ready-check responses.",
+            0.35, 1, 0.7, true,
+        },
+    }
+end
+
 local function ColumnClickHints(column, member)
     if not column or not REPORTABLE_COLUMNS[column.key] then
         return {}
@@ -204,12 +336,35 @@ local function AppendClickHints(lines, column, member)
     return lines
 end
 
+local function HeaderTooltipLines(cell)
+    CountRaidCheckDebug("tooltipBuilds")
+    local column = cell._column
+    if not column then return {} end
+    local setting = PRT:GetRaidCheckColumnSetting(column)
+    local lines = {
+        { column.label, 1, 1, 1 },
+    }
+    if column.multiAura then
+        lines[#lines + 1] = {
+            ("Showing up to %d icon%s%s."):format(
+                tonumber(setting and setting.maxDisplay) or 1,
+                tonumber(setting and setting.maxDisplay) == 1
+                    and "" or "s",
+                setting and setting.showCount
+                    and " with count" or ""),
+            0.72, 0.72, 0.72,
+        }
+    end
+    return AppendClickHints(lines, column, nil)
+end
+
 local function NormalizeAlignment(value)
     if value == "LEFT" or value == "RIGHT" then return value end
     return "CENTER"
 end
 
 local function CreateHeaderCell(parent)
+    CountRaidCheckDebug("headerCellsCreated")
     local cell = CreateFrame("Frame", nil, parent)
     cell:SetSize(DEFAULT_COLUMN_WIDTH, COLUMN_HEADER_HEIGHT)
     cell:EnableMouse(true)
@@ -224,14 +379,8 @@ local function CreateHeaderCell(parent)
     cell.label:SetPoint("BOTTOM", 0, 1)
     cell.label:SetJustifyH("CENTER")
 
-    W.AttachTooltip(cell, {
-        anchor = "ANCHOR_TOP",
-        getLines = function() return cell._tooltipLines or {} end,
-    })
-    cell:HookScript("OnMouseUp", function(self, button)
-        SendColumnClick(
-            self._popup, self._column, nil, button)
-    end)
+    AttachRaidCheckTooltip(cell, HeaderTooltipLines, "ANCHOR_TOP")
+    cell:HookScript("OnMouseUp", HandleHeaderCellMouseUp)
     cell:Hide()
     return cell
 end
@@ -262,109 +411,134 @@ local function ApplyHeaderCellAlignment(cell, alignment)
 end
 
 local function CreateResultCell(parent)
+    CountRaidCheckDebug("resultCellsCreated")
     local cell = CreateFrame("Frame", nil, parent)
     cell:SetSize(DEFAULT_COLUMN_WIDTH, 20)
     cell:EnableMouse(true)
     cell.iconSlots = {}
 
-    cell.text = W.CreateLabel(cell, "", math.max(8, PRT.FONT_SIZE - 2),
-        1, 1, 1)
-    cell.text:SetPoint("CENTER")
-    cell.text:SetJustifyH("CENTER")
-
-    cell.overlay = W.CreateLabel(cell, "", 8, 1, 1, 1)
-    cell.overlay:SetPoint("BOTTOMRIGHT", -1, 0)
-    cell.overlay:SetFont(PRT.FONT, 8, "OUTLINE")
-
-    W.AttachTooltip(cell, {
-        anchor = "ANCHOR_TOP",
-        getLines = function() return cell._tooltipLines or {} end,
-    })
-    cell:HookScript("OnMouseUp", function(self, button)
-        SendColumnClick(
-            self._popup,
-            self._column,
-            self._member,
-            button)
-    end)
+    AttachRaidCheckTooltip(
+        cell, BuildResultCellTooltip, "ANCHOR_TOP")
+    cell:HookScript("OnMouseUp", HandleResultCellMouseUp)
     return cell
+end
+
+local function EnsureCellText(cell)
+    if cell.text then return cell.text end
+    CountRaidCheckDebug("cellTextsCreated")
+    local text = W.CreateLabel(
+        cell, "", math.max(8, PRT.FONT_SIZE - 2), 1, 1, 1)
+    text:SetPoint("CENTER")
+    text:SetJustifyH("CENTER")
+    cell.text = text
+    return text
+end
+
+local function EnsureCellOverlay(cell)
+    if cell.overlay then return cell.overlay end
+    CountRaidCheckDebug("overlaysCreated")
+    local overlay = W.CreateLabel(cell, "", 8, 1, 1, 1)
+    overlay:SetPoint("BOTTOMRIGHT", -1, 0)
+    overlay:SetFont(PRT.FONT, 8, "OUTLINE")
+    cell.overlay = overlay
+    return overlay
 end
 
 local function EnsureIconSlot(cell, index)
     local slot = cell.iconSlots[index]
     if slot then return slot end
-    slot = {}
+    CountRaidCheckDebug("iconSlotsCreated")
+    slot = { cell = cell }
 
     slot.icon = cell:CreateTexture(nil, "ARTWORK")
     slot.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-
-    slot.glow = cell:CreateTexture(nil, "OVERLAY")
-    slot.glow:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
-    slot.glow:SetBlendMode("ADD")
-    slot.glow:SetVertexColor(1, 0.05, 0.05, 1)
-    slot.glow:Hide()
-
-    slot.hit = CreateFrame("Button", nil, cell)
-    slot.hit:SetPoint("TOPLEFT", slot.icon, "TOPLEFT")
-    slot.hit:SetPoint("BOTTOMRIGHT", slot.icon, "BOTTOMRIGHT")
-    slot.hit:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    slot.hit:SetFrameLevel((cell:GetFrameLevel() or 1) + 3)
-    slot.hit:SetScript("OnClick", function(_, button)
-        if button == "RightButton" then
-            local popup = cell._popup
-            local cfg = PRT:GetDB().raidCheck or {}
-            if popup and cfg.dismissOnRightClick ~= false then
-                popup:Hide()
-            end
-            return
-        end
-        SendColumnClick(
-            cell._popup,
-            slot._column,
-            cell._member,
-            button,
-            slot._aura)
-    end)
-    W.AttachTooltip(slot.hit, {
-        anchor = "ANCHOR_TOP",
-        getLines = function()
-            return slot._tooltipLines or {}
-        end,
-    })
-    slot.hit:Hide()
 
     cell.iconSlots[index] = slot
     return slot
 end
 
+local function PositionIconGlow(slot)
+    local glow = slot.glow
+    if not glow then return end
+    local iconSize = tonumber(slot._iconSize) or 10
+    glow:ClearAllPoints()
+    glow:SetPoint("CENTER", slot.icon, "CENTER")
+    glow:SetSize(iconSize + 12, iconSize + 12)
+end
+
+local function EnsureIconGlow(slot)
+    if slot.glow then return slot.glow end
+    CountRaidCheckDebug("iconGlowsCreated")
+    local glow = slot.cell:CreateTexture(nil, "OVERLAY")
+    glow:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+    glow:SetBlendMode("ADD")
+    glow:SetVertexColor(1, 0.05, 0.05, 1)
+    glow:Hide()
+    slot.glow = glow
+    PositionIconGlow(slot)
+    return glow
+end
+
+local function EnsureIconHit(slot)
+    if slot.hit then return slot.hit end
+    CountRaidCheckDebug("iconHitsCreated")
+    local cell = slot.cell
+    local hit = CreateFrame("Button", nil, cell)
+    hit:SetPoint("TOPLEFT", slot.icon, "TOPLEFT")
+    hit:SetPoint("BOTTOMRIGHT", slot.icon, "BOTTOMRIGHT")
+    hit:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    hit:SetFrameLevel((cell:GetFrameLevel() or 1) + 3)
+    hit._raidCheckIconSlot = slot
+    hit:SetScript("OnClick", HandleRaidCheckIconClick)
+    AttachRaidCheckTooltip(
+        hit, RaidCheckIconTooltipLines, "ANCHOR_TOP")
+    hit:Hide()
+    slot.hit = hit
+    return hit
+end
+
 local function HideCellIcons(cell)
     for _, slot in ipairs(cell.iconSlots) do
         slot.icon:Hide()
-        slot.glow:Hide()
-        slot.hit:Hide()
+        if slot.glow then slot.glow:Hide() end
+        if slot.hit then slot.hit:Hide() end
         slot._aura = nil
         slot._column = nil
-        slot._tooltipLines = nil
     end
 end
 
 local function ApplyCellAlignment(cell, alignment)
     alignment = NormalizeAlignment(alignment)
-    cell.text:ClearAllPoints()
-    cell.text:SetPoint("LEFT", 2, 0)
-    cell.text:SetPoint("RIGHT", -2, 0)
-    cell.text:SetJustifyH(alignment)
-
-    cell.overlay:ClearAllPoints()
-    cell.overlay:SetWidth(COUNT_LABEL_WIDTH)
-    cell.overlay:SetJustifyH(alignment)
-    if alignment == "LEFT" then
-        cell.overlay:SetPoint("BOTTOMLEFT", 1, 0)
-    elseif alignment == "RIGHT" then
-        cell.overlay:SetPoint("BOTTOMRIGHT", -1, 0)
-    else
-        cell.overlay:SetPoint("BOTTOM", 0, 0)
+    local text = cell.text
+    if text then
+        text:ClearAllPoints()
+        text:SetPoint("LEFT", 2, 0)
+        text:SetPoint("RIGHT", -2, 0)
+        text:SetJustifyH(alignment)
     end
+
+    local overlay = cell.overlay
+    if overlay then
+        overlay:ClearAllPoints()
+        overlay:SetWidth(COUNT_LABEL_WIDTH)
+        overlay:SetJustifyH(alignment)
+        if alignment == "LEFT" then
+            overlay:SetPoint("BOTTOMLEFT", 1, 0)
+        elseif alignment == "RIGHT" then
+            overlay:SetPoint("BOTTOMRIGHT", -1, 0)
+        else
+            overlay:SetPoint("BOTTOM", 0, 0)
+        end
+    end
+end
+
+local function ShowCellText(cell, alignment, value, r, g, b)
+    local text = EnsureCellText(cell)
+    ApplyCellAlignment(cell, alignment)
+    text:SetText(value or "")
+    text:SetTextColor(r or 1, g or 1, b or 1)
+    text:Show()
+    return text
 end
 
 local function AuraDisplayName(aura)
@@ -459,6 +633,53 @@ local function CategoryTooltip(column, member, auras)
     return lines
 end
 
+BuildAuraSlotTooltip = function(slot)
+    CountRaidCheckDebug("tooltipBuilds")
+    local column = slot._column
+    if not column then return {} end
+    local lines = AuraTooltip(column, slot._aura)
+    if column.key == "potions" then
+        lines[#lines + 1] = {
+            "Left-click to report this potion to group chat.",
+            0.35, 1, 0.7, true,
+        }
+    end
+    return lines
+end
+
+BuildResultCellTooltip = function(cell)
+    CountRaidCheckDebug("tooltipBuilds")
+    local column, member = cell._column, cell._member
+    if not column or not member then return {} end
+    local value = ColumnValue(member, column)
+    local lines
+    if column.key == "durability" then
+        lines = {
+            { "Durability", 1, 1, 1 },
+        }
+        if value == nil then
+            lines[#lines + 1] = {
+                "No recent PRT durability response.",
+                0.72, 0.72, 0.72, true,
+            }
+        else
+            lines[#lines + 1] = {
+                ("%.1f%%"):format(value), 0.72, 0.72, 0.72,
+            }
+        end
+    elseif not member.auraScanAvailable then
+        lines = {
+            { column.label, 1, 1, 1 },
+            { "Aura data is unavailable.", 1, 0.8, 0.2 },
+        }
+    elseif column.multiAura then
+        lines = CategoryTooltip(column, member, value)
+    else
+        lines = AuraTooltip(column, value)
+    end
+    return AppendClickHints(lines, column, member)
+end
+
 local function PositionIconSlots(
         cell, displayed, iconSize, alignment, trailingWidth)
     if displayed <= 0 then return end
@@ -480,12 +701,11 @@ local function PositionIconSlots(
         local slot = EnsureIconSlot(cell, index)
         slot.icon:ClearAllPoints()
         slot.icon:SetSize(iconSize, iconSize)
+        slot._iconSize = iconSize
         slot.icon:SetPoint(
             "CENTER", cell, "CENTER",
             firstX + (index - 1) * (iconSize + gap), 0)
-        slot.glow:ClearAllPoints()
-        slot.glow:SetPoint("CENTER", slot.icon, "CENTER")
-        slot.glow:SetSize(iconSize + 12, iconSize + 12)
+        PositionIconGlow(slot)
     end
     return EnsureIconSlot(cell, displayed)
 end
@@ -501,17 +721,16 @@ local function ShowAuraIcon(slot, aura, column, glow, uncountedMode)
         slot.icon:SetVertexColor(1, 1, 1, 1)
     end
     slot.icon:Show()
-    slot.glow:SetShown(glow == true)
+    if glow == true then
+        EnsureIconGlow(slot):Show()
+    elseif slot.glow then
+        slot.glow:Hide()
+    end
     slot._aura = aura
     slot._column = column
-    slot._tooltipLines = AuraTooltip(column, aura)
     if column.key == "potions" then
-        slot._tooltipLines[#slot._tooltipLines + 1] = {
-            "Left-click to report this potion to group chat.",
-            0.35, 1, 0.7, true,
-        }
-        slot.hit:Show()
-    else
+        EnsureIconHit(slot):Show()
+    elseif slot.hit then
         slot.hit:Hide()
     end
 end
@@ -519,10 +738,9 @@ end
 local function UpdateCategoryCell(
         cell, member, column, auras, iconSize, setting, alignment)
     if not auras or #auras == 0 then
-        cell.text:SetText("x")
-        cell.text:SetTextColor(
+        ShowCellText(
+            cell, alignment, "x",
             PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3])
-        cell._tooltipLines = CategoryTooltip(column, member, auras)
         return
     end
 
@@ -538,10 +756,9 @@ local function UpdateCategoryCell(
         end
     end
     if #displayedAuras == 0 then
-        cell.text:SetText("x")
-        cell.text:SetTextColor(
+        ShowCellText(
+            cell, alignment, "x",
             PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3])
-        cell._tooltipLines = CategoryTooltip(column, member, auras)
         return
     end
 
@@ -554,7 +771,7 @@ local function UpdateCategoryCell(
         and (COUNT_LABEL_WIDTH + COUNT_LABEL_GAP) or 0
     local lastSlot = PositionIconSlots(
         cell, displayed, iconSize, alignment, countSpace)
-    cell.text:Hide()
+    if cell.text then cell.text:Hide() end
 
     for index = 1, displayed do
         local slot = EnsureIconSlot(cell, index)
@@ -567,71 +784,63 @@ local function UpdateCategoryCell(
     end
 
     if showCount then
+        local overlay = EnsureCellOverlay(cell)
         local count = column.key == "worldBuffs"
             and #(member.countedWorldBuffs or {}) or #auras
-        cell.overlay:ClearAllPoints()
-        cell.overlay:SetWidth(COUNT_LABEL_WIDTH)
-        cell.overlay:SetPoint(
+        overlay:ClearAllPoints()
+        overlay:SetWidth(COUNT_LABEL_WIDTH)
+        overlay:SetPoint(
             "LEFT", lastSlot.icon, "RIGHT", COUNT_LABEL_GAP, 0)
-        cell.overlay:SetJustifyH("LEFT")
-        cell.overlay:SetText(tostring(count))
+        overlay:SetJustifyH("LEFT")
+        overlay:SetText(tostring(count))
     end
-    cell._tooltipLines = CategoryTooltip(column, member, auras)
 end
 
 local function UpdateResultCell(cell, member, column, rowHeight, width)
+    CountRaidCheckDebug("cellUpdates")
     cell:SetSize(width, rowHeight)
     local iconSize = math.max(10, rowHeight)
     local setting = PRT:GetRaidCheckColumnSetting(column)
     local alignment = NormalizeAlignment(setting and setting.alignment)
     HideCellIcons(cell)
     ApplyCellAlignment(cell, alignment)
-    cell.text:Show()
-    cell.text:SetText("")
-    cell.overlay:SetText("")
-    cell.overlay:SetTextColor(1, 1, 1)
+    if cell.text then
+        cell.text:SetText("")
+        cell.text:Hide()
+    end
+    if cell.overlay then
+        cell.overlay:SetText("")
+        cell.overlay:SetTextColor(1, 1, 1)
+    end
     cell:SetAlpha(member.connected and 1 or 0.35)
 
     local value = ColumnValue(member, column)
     if column.key == "durability" then
         if value == nil then
-            cell.text:SetText("-")
-            cell.text:SetTextColor(
+            ShowCellText(
+                cell, alignment, "-",
                 PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3])
-            cell._tooltipLines = {
-                { "Durability", 1, 1, 1 },
-                {
-                    "No recent PRT durability response.",
-                    0.72, 0.72, 0.72, true,
-                },
-            }
         else
-            cell.text:SetText(("%d%%"):format(math.floor(value + 0.5)))
+            local r, g, b = 1, 1, 1
             if value < 25 then
-                cell.text:SetTextColor(
-                    PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3])
+                r, g, b = PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3]
             elseif value <= 50 then
-                cell.text:SetTextColor(
-                    PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
-            else
-                cell.text:SetTextColor(1, 1, 1)
+                r, g, b =
+                    PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3]
             end
-            cell._tooltipLines = {
-                { "Durability", 1, 1, 1 },
-                { ("%.1f%%"):format(value), 0.72, 0.72, 0.72 },
-            }
+            ShowCellText(
+                cell,
+                alignment,
+                ("%d%%"):format(math.floor(value + 0.5)),
+                r, g, b)
         end
         return
     end
 
     if not member.auraScanAvailable then
-        cell.text:SetText("?")
-        cell.text:SetTextColor(
+        ShowCellText(
+            cell, alignment, "?",
             PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
-        cell._tooltipLines = {
-            { column.label, 1, 1, 1 },
-            { "Aura data is unavailable.", 1, 0.8, 0.2 },
-        }
         return
     end
 
@@ -644,23 +853,24 @@ local function UpdateResultCell(cell, member, column, rowHeight, width)
     if value then
         local slot = EnsureIconSlot(cell, 1)
         PositionIconSlots(cell, 1, iconSize, alignment)
-        cell.text:Hide()
+        if cell.text then cell.text:Hide() end
         ShowAuraIcon(
             slot, value, column, value.raidCheckLowRank, nil)
         if value.raidCheckLowRank then
-            cell.overlay:SetText("R" .. tostring(value.raidCheckRank or "?"))
-            cell.overlay:SetTextColor(1, 0.25, 0.2)
+            local overlay = EnsureCellOverlay(cell)
+            ApplyCellAlignment(cell, alignment)
+            overlay:SetText("R" .. tostring(value.raidCheckRank or "?"))
+            overlay:SetTextColor(1, 0.25, 0.2)
         end
-        cell._tooltipLines = AuraTooltip(column, value)
     else
-        cell.text:SetText("x")
-        cell.text:SetTextColor(
+        ShowCellText(
+            cell, alignment, "x",
             PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3])
-        cell._tooltipLines = AuraTooltip(column, nil)
     end
 end
 
 local function CreateResultRow(parent)
+    CountRaidCheckDebug("rowsCreated")
     local row = W.CreateRowFrame(parent, 20)
     row:EnableMouse(true)
 
@@ -684,42 +894,26 @@ local function CreateResultRow(parent)
         PRT.FONT, math.max(9, PRT.FONT_SIZE - 1), "OUTLINE")
 
     row.cells = {}
-    for index = 1, MAX_COLUMNS do
-        row.cells[index] = CreateResultCell(row)
-    end
 
-    W.AttachTooltip(row, {
-        anchor = "ANCHOR_LEFT",
-        getLines = function()
-            local member = row.member
-            if not member then return {} end
-            return {
-                { member.displayName or member.name or "", 1, 1, 1 },
-                {
-                    ("Group %d%s"):format(
-                        member.subgroup or 1,
-                        member.dead and " - Dead" or ""),
-                    0.78, 0.78, 0.78,
-                },
-                {
-                    member.connected and "Online" or "Offline",
-                    member.connected and 0.45 or 1,
-                    member.connected and 0.9 or 0.35,
-                    member.connected and 0.45 or 0.35,
-                },
-            }
-        end,
-    })
-    row:HookScript("OnMouseUp", function(self, button)
-        SendColumnClick(
-            self._popup, nil, self.member, button)
-    end)
+    AttachRaidCheckTooltip(row, ResultRowTooltipLines, "ANCHOR_LEFT")
+    row:HookScript("OnMouseUp", HandleResultRowMouseUp)
     row:Hide()
     return row
 end
 
+local function EnsureResultCell(row, index)
+    local cell = row.cells[index]
+    if cell then return cell end
+    cell = CreateResultCell(row)
+    cell._popup = row._popup
+    AttachRightClickDismiss(cell, row._popup)
+    row.cells[index] = cell
+    return cell
+end
+
 local function UpdateResultRow(
         row, member, columns, columnLayout, rowHeight, index)
+    CountRaidCheckDebug("rowUpdates")
     row.member = member
     row:SetHeight(rowHeight)
     row:ClearAllPoints()
@@ -746,29 +940,31 @@ local function UpdateResultRow(
     row.readyIcon:SetTexture(readyTexture)
     row.readyIcon:SetShown(readyTexture ~= nil)
 
-    for columnIndex, cell in ipairs(row.cells) do
-        local column = columns[columnIndex]
+    for columnIndex, column in ipairs(columns) do
+        local cell = EnsureResultCell(row, columnIndex)
         local layout = columnLayout[columnIndex]
-        if column and layout then
+        if layout then
             cell._column = column
             cell._member = member
             cell:ClearAllPoints()
             cell:SetPoint("LEFT", layout.x, 0)
             UpdateResultCell(
                 cell, member, column, rowHeight, layout.width)
-            cell._tooltipLines = AppendClickHints(
-                cell._tooltipLines, column, member)
             cell:Show()
-        else
-            cell._column = nil
-            cell._member = nil
-            cell:Hide()
         end
+    end
+    for columnIndex = #columns + 1, #row.cells do
+        local cell = row.cells[columnIndex]
+        cell._column = nil
+        cell._member = nil
+        HideCellIcons(cell)
+        cell:Hide()
     end
     row:Show()
 end
 
 local function CreateMiniMember(parent)
+    CountRaidCheckDebug("miniMembersCreated")
     local memberFrame = CreateFrame("Frame", nil, parent)
     memberFrame:SetSize(MINI_COLUMN_WIDTH, MINI_ROW_HEIGHT)
 
@@ -784,40 +980,47 @@ local function CreateMiniMember(parent)
     memberFrame.nameLabel:SetFont(
         PRT.FONT, math.max(8, PRT.FONT_SIZE - 2), "OUTLINE")
     memberFrame:EnableMouse(true)
-    memberFrame:HookScript("OnMouseUp", function(self, button)
-        SendColumnClick(
-            self._popup, nil, self._member, button)
-    end)
+    memberFrame:HookScript("OnMouseUp", HandleMiniMemberMouseUp)
     memberFrame:Hide()
     return memberFrame
 end
 
+EnsureMiniMember = function(popup, index)
+    local mini = popup.miniMembers[index]
+    if mini then return mini end
+    mini = CreateMiniMember(popup.minimized)
+    mini._popup = popup
+    AttachRightClickDismiss(mini, popup)
+    popup.miniMembers[index] = mini
+    return mini
+end
+
 local function UpdateMiniMembers(popup, members)
     local rows = math.max(1, math.ceil(#members / MINI_COLUMNS))
-    for index, mini in ipairs(popup.miniMembers) do
-        local member = members[index]
-        if member then
-            mini._member = member
-            local column = (index - 1) % MINI_COLUMNS
-            local row = math.floor((index - 1) / MINI_COLUMNS)
-            mini:ClearAllPoints()
-            mini:SetPoint(
-                "TOPLEFT",
-                column * MINI_COLUMN_WIDTH,
-                -(row * MINI_ROW_HEIGHT))
-            mini.nameLabel:SetText(member.name or member.displayName or "")
-            local r, g, b = GetClassColor(member.classFile)
-            mini.nameLabel:SetTextColor(r, g, b)
-            mini:SetAlpha(member.connected and 1 or 0.4)
-            local readyTexture = ReadyTexture(member.readyStatus)
-            mini.readyIcon:SetTexture(readyTexture)
-            mini.readyIcon:SetShown(readyTexture ~= nil)
-            mini:Show()
-        else
-            mini._member = nil
-            mini:SetAlpha(1)
-            mini:Hide()
-        end
+    for index, member in ipairs(members) do
+        local mini = EnsureMiniMember(popup, index)
+        mini._member = member
+        local column = (index - 1) % MINI_COLUMNS
+        local row = math.floor((index - 1) / MINI_COLUMNS)
+        mini:ClearAllPoints()
+        mini:SetPoint(
+            "TOPLEFT",
+            column * MINI_COLUMN_WIDTH,
+            -(row * MINI_ROW_HEIGHT))
+        mini.nameLabel:SetText(member.name or member.displayName or "")
+        local r, g, b = GetClassColor(member.classFile)
+        mini.nameLabel:SetTextColor(r, g, b)
+        mini:SetAlpha(member.connected and 1 or 0.4)
+        local readyTexture = ReadyTexture(member.readyStatus)
+        mini.readyIcon:SetTexture(readyTexture)
+        mini.readyIcon:SetShown(readyTexture ~= nil)
+        mini:Show()
+    end
+    for index = #members + 1, #popup.miniMembers do
+        local mini = popup.miniMembers[index]
+        mini._member = nil
+        mini:SetAlpha(1)
+        mini:Hide()
     end
     return rows
 end
@@ -921,15 +1124,60 @@ local function BuildColumnLayout(columns)
     return layout, x
 end
 
-local function AttachRightClickDismiss(frame, popup)
+local function HandleRightClickDismiss(frame, button)
+    local popup = frame._raidCheckDismissPopup
+    local cfg = PRT:GetDB().raidCheck or {}
+    if button == "RightButton"
+        and popup
+        and cfg.dismissOnRightClick ~= false then
+        popup:Hide()
+    end
+end
+
+AttachRightClickDismiss = function(frame, popup)
     if not frame or not frame.HookScript then return end
-    frame:HookScript("OnMouseDown", function(_, button)
-        local cfg = PRT:GetDB().raidCheck or {}
-        if button == "RightButton"
-            and cfg.dismissOnRightClick ~= false then
-            popup:Hide()
+    frame._raidCheckDismissPopup = popup
+    frame:HookScript("OnMouseDown", HandleRightClickDismiss)
+end
+
+local function EnsureHeaderCell(popup, index)
+    local header = popup.headerCells[index]
+    if header then return header end
+    header = CreateHeaderCell(popup.columnHeader)
+    header._popup = popup
+    AttachRightClickDismiss(header, popup)
+    popup.headerCells[index] = header
+    return header
+end
+
+local function EnsureResultRow(popup, index)
+    local row = popup.rows[index]
+    if row then return row end
+    row = CreateResultRow(popup.body)
+    row._popup = popup
+    AttachRightClickDismiss(row, popup)
+    popup.rows[index] = row
+    return row
+end
+
+local function ReleaseExpandedBindings(popup)
+    for _, header in ipairs(popup.headerCells) do
+        header._column = nil
+    end
+    for _, row in ipairs(popup.rows) do
+        row.member = nil
+        for _, cell in ipairs(row.cells) do
+            cell._column = nil
+            cell._member = nil
+            HideCellIcons(cell)
         end
-    end)
+    end
+end
+
+local function ReleaseMiniBindings(popup)
+    for _, mini in ipairs(popup.miniMembers) do
+        mini._member = nil
+    end
 end
 
 local function ApplyWindowMode(popup, snapshot, columns)
@@ -940,12 +1188,14 @@ local function ApplyWindowMode(popup, snapshot, columns)
     popup.collapseButton.label:SetText(collapsed and "v" or "^")
 
     if collapsed then
+        ReleaseExpandedBindings(popup)
         local miniRows = UpdateMiniMembers(popup, snapshot.members)
         popup:SetSize(
             MINI_COLUMN_WIDTH * MINI_COLUMNS,
             HEADER_HEIGHT + miniRows * MINI_ROW_HEIGHT)
         return
     end
+    ReleaseMiniBindings(popup)
 
     local columnLayout, contentWidth = BuildColumnLayout(columns)
     local rowHeight = #snapshot.members <= 20 and 20 or 14
@@ -956,10 +1206,10 @@ local function ApplyWindowMode(popup, snapshot, columns)
         HEADER_HEIGHT + COLUMN_HEADER_HEIGHT + bodyHeight)
 
     popup.playerHeader:SetWidth(NAME_WIDTH)
-    for index, header in ipairs(popup.headerCells) do
-        local column = columns[index]
+    for index, column in ipairs(columns) do
+        local header = EnsureHeaderCell(popup, index)
         local layout = columnLayout[index]
-        if column and layout then
+        if layout then
             header._column = column
             header:ClearAllPoints()
             header:SetPoint("LEFT", layout.x, 0)
@@ -970,51 +1220,39 @@ local function ApplyWindowMode(popup, snapshot, columns)
             local setting = PRT:GetRaidCheckColumnSetting(column)
             ApplyHeaderCellAlignment(
                 header, setting and setting.alignment)
-            local details = column.multiAura
-                and ("Showing up to %d icon%s%s."):format(
-                    tonumber(setting.maxDisplay) or 1,
-                    tonumber(setting.maxDisplay) == 1 and "" or "s",
-                    setting.showCount and " with count" or "")
-                or nil
-            header._tooltipLines = {
-                { column.label, 1, 1, 1 },
-            }
-            if details then
-                header._tooltipLines[#header._tooltipLines + 1] = {
-                    details, 0.72, 0.72, 0.72,
-                }
-            end
-            header._tooltipLines = AppendClickHints(
-                header._tooltipLines, column, nil)
             header:Show()
-        else
-            header._column = nil
-            header:Hide()
         end
     end
+    for index = #columns + 1, #popup.headerCells do
+        local header = popup.headerCells[index]
+        header._column = nil
+        header:Hide()
+    end
 
-    for index, row in ipairs(popup.rows) do
-        local member = snapshot.members[index]
-        if member then
-            UpdateResultRow(
-                row,
-                member,
-                columns,
-                columnLayout,
-                rowHeight,
-                index)
-        else
-            row.member = nil
-            for _, cell in ipairs(row.cells) do
-                cell._column = nil
-                cell._member = nil
-            end
-            row:Hide()
+    for index, member in ipairs(snapshot.members) do
+        local row = EnsureResultRow(popup, index)
+        UpdateResultRow(
+            row,
+            member,
+            columns,
+            columnLayout,
+            rowHeight,
+            index)
+    end
+    for index = #snapshot.members + 1, #popup.rows do
+        local row = popup.rows[index]
+        row.member = nil
+        for _, cell in ipairs(row.cells) do
+            cell._column = nil
+            cell._member = nil
+            HideCellIcons(cell)
         end
+        row:Hide()
     end
 end
 
 local function CreateRaidCheckWindow()
+    CountRaidCheckDebug("windowsCreated")
     local popup = W.CreatePopupFrame(
         "PRTRaidCheckWindow",
         620,
@@ -1114,29 +1352,16 @@ local function CreateRaidCheckWindow()
         "LeftButtonUp", "RightButtonUp")
     popup.playerHeaderHit:SetFrameLevel(
         (popup.columnHeader:GetFrameLevel() or 1) + 3)
-    popup.playerHeaderHit:SetScript("OnClick", function(_, button)
-        SendColumnClick(popup, nil, nil, button)
-    end)
-    W.AttachTooltip(popup.playerHeaderHit, {
-        anchor = "ANCHOR_TOP",
-        getLines = function()
-            return {
-                { "Player List", 1, 1, 1 },
-                {
-                    "Left-click to report ready-check responses.",
-                    0.35, 1, 0.7, true,
-                },
-            }
-        end,
-    })
+    popup.playerHeaderHit._popup = popup
+    popup.playerHeaderHit:SetScript(
+        "OnClick", HandlePlayerHeaderClick)
+    AttachRaidCheckTooltip(
+        popup.playerHeaderHit,
+        PlayerHeaderTooltipLines,
+        "ANCHOR_TOP")
     AttachRightClickDismiss(popup.playerHeaderHit, popup)
 
     popup.headerCells = {}
-    for index = 1, MAX_COLUMNS do
-        popup.headerCells[index] = CreateHeaderCell(popup.columnHeader)
-        popup.headerCells[index]._popup = popup
-        AttachRightClickDismiss(popup.headerCells[index], popup)
-    end
 
     popup.body = CreateFrame("Frame", nil, popup.expanded)
     popup.body:SetPoint(
@@ -1145,25 +1370,11 @@ local function CreateRaidCheckWindow()
         "BOTTOMRIGHT", popup.expanded, "BOTTOMRIGHT", 0, 0)
 
     popup.rows = {}
-    for index = 1, MAX_ROWS do
-        popup.rows[index] = CreateResultRow(popup.body)
-        popup.rows[index]._popup = popup
-        AttachRightClickDismiss(popup.rows[index], popup)
-        for _, cell in ipairs(popup.rows[index].cells) do
-            cell._popup = popup
-            AttachRightClickDismiss(cell, popup)
-        end
-    end
 
     popup.minimized = CreateFrame("Frame", nil, popup)
     popup.minimized:SetPoint("TOPLEFT", 0, -HEADER_HEIGHT)
     popup.minimized:SetPoint("BOTTOMRIGHT")
     popup.miniMembers = {}
-    for index = 1, MAX_ROWS do
-        popup.miniMembers[index] = CreateMiniMember(popup.minimized)
-        popup.miniMembers[index]._popup = popup
-        AttachRightClickDismiss(popup.miniMembers[index], popup)
-    end
 
     popup:SetScript("OnUpdate", function(self, elapsed)
         if self.snapshot and self.snapshot.preview
@@ -1200,7 +1411,46 @@ local function CreateRaidCheckWindow()
         self._fadeStart = nil
         self._fadeEnd = nil
         self._lastProgressRatio = nil
+        ReleaseExpandedBindings(self)
+        ReleaseMiniBindings(self)
+        self._previewSnapshot = nil
+        self.snapshot = nil
+        self.columns = nil
+        CountRaidCheckDebug("windowBindingsReleased")
     end)
+
+    function popup:GetRaidCheckDebugSummary()
+        local cells, texts, overlays = 0, 0, 0
+        local iconSlots, iconGlows, iconHits = 0, 0, 0
+        for _, row in ipairs(self.rows) do
+            cells = cells + #row.cells
+            for _, cell in ipairs(row.cells) do
+                if cell.text then texts = texts + 1 end
+                if cell.overlay then overlays = overlays + 1 end
+                iconSlots = iconSlots + #cell.iconSlots
+                for _, slot in ipairs(cell.iconSlots) do
+                    if slot.glow then iconGlows = iconGlows + 1 end
+                    if slot.hit then iconHits = iconHits + 1 end
+                end
+            end
+        end
+        return {
+            shown = self:IsShown(),
+            previewRetained = self._previewSnapshot ~= nil,
+            snapshotRetained = self.snapshot ~= nil,
+            members = self.snapshot and #(self.snapshot.members or {}) or 0,
+            columns = #(self.columns or {}),
+            headers = #self.headerCells,
+            rows = #self.rows,
+            cells = cells,
+            texts = texts,
+            overlays = overlays,
+            iconSlots = iconSlots,
+            iconGlows = iconGlows,
+            iconHits = iconHits,
+            miniMembers = #self.miniMembers,
+        }
+    end
 
     ApplySavedPosition(popup)
     return popup
@@ -1235,6 +1485,7 @@ end
 function PRT:RefreshRaidCheckWindow()
     local popup = self.raidCheckWindow
     if not popup or not popup:IsShown() then return end
+    CountRaidCheckDebug("windowRefreshes")
 
     local snapshot = popup._previewSnapshot
         or self:BuildRaidCheckSnapshot()
