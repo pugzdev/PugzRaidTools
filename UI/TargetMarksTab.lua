@@ -286,6 +286,16 @@ function PRT:BuildTargetMarksTab()
     end)
     enableCB:SetPoint("TOPLEFT", 12, -66)
 
+    local allowSoloCB = W.CreateCheckbox(panel, "Allow marking while solo", function(checked)
+        local db = PRT:GetDB()
+        db.targetMarks.allowSolo = checked
+        PRT:ResetTargetMarksState()
+        if checked and db.targetMarks.enabled then
+            PRT:TryTargetMarkMouseover("setting")
+        end
+    end)
+    allowSoloCB:SetPoint("TOPLEFT", 240, -66)
+
     -----------------------------------------------------------------------
     -- Preset row
     -----------------------------------------------------------------------
@@ -1090,6 +1100,7 @@ function PRT:BuildTargetMarksTab()
     function panel:RefreshEnabledState()
         local db = PRT:GetDB()
         enableCB:SetChecked(db.targetMarks.enabled and true or false)
+        allowSoloCB:SetChecked(db.targetMarks.allowSolo and true or false)
     end
 
     function panel:RefreshPresetDD()

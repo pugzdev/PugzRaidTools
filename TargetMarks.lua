@@ -15,6 +15,18 @@ local targetMarksDebug = {
     counters = {},
     baseline = nil,
 }
+local targetMarksRuntimeDebug = {
+    enabled = false,
+    counters = {},
+    baselineMS = 0,
+    recent = {},
+    modifierRecent = {},
+    pending = {},
+    requestSerial = 0,
+}
+local TARGET_MARK_RUNTIME_RECENT_LIMIT = 12
+local TARGET_MARK_MODIFIER_RECENT_LIMIT = 8
+local TARGET_MARK_VERIFY_DELAYS = { 0.10, 0.20, 0.40, 0.80 }
 
 local function CountTargetMarksDebug(key, amount)
     if not targetMarksDebug.enabled then return end
@@ -121,6 +133,286 @@ function PRT:DumpTargetMarksMemoryDebug(forceGC, label)
             summary.markButtons or 0,
             summary.editStates or 0,
             summary.scrollOffset or 0))
+    end
+end
+
+local function TargetMarksNowMS()
+    if type(debugprofilestop) == "function" then
+        return debugprofilestop()
+    end
+    if type(GetTime) == "function" then
+        return (GetTime() or 0) * 1000
+    end
+    return 0
+end
+
+local function CountTargetMarksRuntime(key, amount)
+    if not targetMarksRuntimeDebug.enabled then return end
+    local counters = targetMarksRuntimeDebug.counters
+    counters[key] = (counters[key] or 0) + (amount or 1)
+end
+
+local function PushTargetMarksRuntimeRecent(message)
+    if not targetMarksRuntimeDebug.enabled then return end
+    local elapsed = math.max(0,
+        TargetMarksNowMS() - (targetMarksRuntimeDebug.baselineMS or 0))
+    local recent = targetMarksRuntimeDebug.recent
+    recent[#recent + 1] = ("+%.3fs %s"):format(
+        elapsed / 1000, tostring(message or ""))
+    if #recent > TARGET_MARK_RUNTIME_RECENT_LIMIT then
+        table.remove(recent, 1)
+    end
+end
+
+local function PushTargetMarksModifierRecent(message)
+    if not targetMarksRuntimeDebug.enabled then return end
+    local elapsed = math.max(0,
+        TargetMarksNowMS() - (targetMarksRuntimeDebug.baselineMS or 0))
+    local recent = targetMarksRuntimeDebug.modifierRecent
+    recent[#recent + 1] = ("+%.3fs %s"):format(
+        elapsed / 1000, tostring(message or ""))
+    if #recent > TARGET_MARK_MODIFIER_RECENT_LIMIT then
+        table.remove(recent, 1)
+    end
+end
+
+local function ResetTargetMarksRuntimeDebug()
+    targetMarksRuntimeDebug.counters = {}
+    targetMarksRuntimeDebug.baselineMS = TargetMarksNowMS()
+    targetMarksRuntimeDebug.recent = {}
+    targetMarksRuntimeDebug.modifierRecent = {}
+    targetMarksRuntimeDebug.pending = {}
+    targetMarksRuntimeDebug.requestSerial = 0
+end
+
+local function BeginTargetMarkAttempt(trigger)
+    if not targetMarksRuntimeDebug.enabled then return nil end
+    CountTargetMarksRuntime("attempts")
+    CountTargetMarksRuntime("trigger_" .. tostring(trigger or "unknown"))
+    return TargetMarksNowMS()
+end
+
+local function FinishTargetMarkAttempt(startMS, outcome)
+    if not startMS or not targetMarksRuntimeDebug.enabled then return end
+    local elapsed = math.max(0, TargetMarksNowMS() - startMS)
+    local counters = targetMarksRuntimeDebug.counters
+    CountTargetMarksRuntime("result_" .. tostring(outcome or "unknown"))
+    counters.attemptTotalMS = (counters.attemptTotalMS or 0) + elapsed
+    counters.attemptMaxMS = math.max(counters.attemptMaxMS or 0, elapsed)
+    if elapsed >= 2 then
+        CountTargetMarksRuntime("slowAttempts")
+    end
+end
+
+local function FinishTargetMarkVerification(pending, outcome, source, observed)
+    if not pending
+        or targetMarksRuntimeDebug.pending[pending.guid] ~= pending then
+        return false
+    end
+
+    targetMarksRuntimeDebug.pending[pending.guid] = nil
+    CountTargetMarksRuntime("verification_" .. outcome)
+
+    if outcome == "confirmed" then
+        local latency = math.max(0, TargetMarksNowMS() - pending.requestedMS)
+        local counters = targetMarksRuntimeDebug.counters
+        counters.confirmLatencyTotalMS =
+            (counters.confirmLatencyTotalMS or 0) + latency
+        counters.confirmLatencyMaxMS =
+            math.max(counters.confirmLatencyMaxMS or 0, latency)
+        PushTargetMarksRuntimeRecent(
+            ("confirmed %s npc=%s mark=%s in %.1fms via %s"):format(
+                pending.name ~= "" and pending.name or pending.guid,
+                tostring(pending.npcId or "?"),
+                tostring(pending.markId or "?"),
+                latency,
+                tostring(source or "check")))
+    else
+        PushTargetMarksRuntimeRecent(
+            ("%s %s npc=%s requested=%s observed=%s"):format(
+                outcome,
+                pending.name ~= "" and pending.name or pending.guid,
+                tostring(pending.npcId or "?"),
+                tostring(pending.markId or "?"),
+                tostring(observed or 0)))
+    end
+    return true
+end
+
+local function ObserveTargetMarkVerification(source, expectedGuid)
+    if not targetMarksRuntimeDebug.enabled then return false end
+
+    local guid = type(UnitGUID) == "function" and UnitGUID("mouseover") or nil
+    local pending = targetMarksRuntimeDebug.pending[expectedGuid or guid]
+    if not pending then return false end
+    if guid ~= pending.guid then
+        return FinishTargetMarkVerification(
+            pending, "target_lost", source, 0)
+    end
+
+    local observed = type(GetRaidTargetIndex) == "function"
+        and (GetRaidTargetIndex("mouseover") or 0) or 0
+    if observed == pending.markId then
+        return FinishTargetMarkVerification(
+            pending, "confirmed", source, observed)
+    end
+    return false
+end
+
+local function ScheduleTargetMarkVerification(
+    guid, npcId, name, markId, trigger)
+    if not targetMarksRuntimeDebug.enabled then return end
+
+    targetMarksRuntimeDebug.requestSerial =
+        targetMarksRuntimeDebug.requestSerial + 1
+    local pending = {
+        serial = targetMarksRuntimeDebug.requestSerial,
+        guid = guid,
+        npcId = npcId,
+        name = name or "",
+        markId = markId,
+        trigger = trigger or "unknown",
+        requestedMS = TargetMarksNowMS(),
+    }
+    targetMarksRuntimeDebug.pending[guid] = pending
+    CountTargetMarksRuntime("markRequests")
+    PushTargetMarksRuntimeRecent(
+        ("requested %s npc=%s mark=%s trigger=%s"):format(
+            pending.name ~= "" and pending.name or guid,
+            tostring(npcId or "?"),
+            tostring(markId or "?"),
+            pending.trigger))
+
+    if not C_Timer or type(C_Timer.After) ~= "function" then return end
+
+    local checkIndex = 1
+    local function Check()
+        if not targetMarksRuntimeDebug.enabled
+            or targetMarksRuntimeDebug.pending[guid] ~= pending then
+            return
+        end
+        if ObserveTargetMarkVerification("timer", guid) then return end
+
+        checkIndex = checkIndex + 1
+        local delay = TARGET_MARK_VERIFY_DELAYS[checkIndex]
+        if delay then
+            C_Timer.After(delay, Check)
+            return
+        end
+
+        local observed = type(GetRaidTargetIndex) == "function"
+            and (GetRaidTargetIndex("mouseover") or 0) or 0
+        FinishTargetMarkVerification(
+            pending, "unconfirmed", "timer", observed)
+    end
+
+    C_Timer.After(TARGET_MARK_VERIFY_DELAYS[checkIndex], Check)
+end
+
+function PRT:IsTargetMarksRuntimeDebugEnabled()
+    return targetMarksRuntimeDebug.enabled
+end
+
+function PRT:GetTargetMarksRuntimeDebugCounters()
+    return targetMarksRuntimeDebug.counters
+end
+
+function PRT:ResetTargetMarksRuntimeDebug()
+    ResetTargetMarksRuntimeDebug()
+    PRT.Print("Target Marks runtime diagnostics cleared.")
+end
+
+function PRT:SetTargetMarksRuntimeDebug(enabled)
+    enabled = enabled and true or false
+    if enabled then
+        targetMarksRuntimeDebug.enabled = true
+        ResetTargetMarksRuntimeDebug()
+        if self._targetMarksFrame then
+            self._targetMarksFrame:RegisterEvent("RAID_TARGET_UPDATE")
+        end
+        PRT.Print(
+            "Target Marks runtime diagnostics enabled. Mark targets normally, then use /prt debug target.")
+        return
+    end
+
+    if targetMarksRuntimeDebug.enabled then
+        self:DumpTargetMarksRuntimeDebug("final")
+    end
+    targetMarksRuntimeDebug.enabled = false
+    targetMarksRuntimeDebug.pending = {}
+    if self._targetMarksFrame then
+        self._targetMarksFrame:UnregisterEvent("RAID_TARGET_UPDATE")
+    end
+    PRT.Print("Target Marks runtime diagnostics disabled.")
+end
+
+function PRT:DumpTargetMarksRuntimeDebug(label)
+    local counters = targetMarksRuntimeDebug.counters
+    local attempts = counters.attempts or 0
+    local confirmations = counters.verification_confirmed or 0
+    local pendingCount = 0
+    for _ in pairs(targetMarksRuntimeDebug.pending) do
+        pendingCount = pendingCount + 1
+    end
+
+    PRT.Print(("TARGET MARKS RUNTIME %s elapsed=%.1fs attempts=%d requests=%d confirmed=%d pending=%d"):format(
+        tostring(label or "snapshot"),
+        math.max(0, TargetMarksNowMS()
+            - (targetMarksRuntimeDebug.baselineMS or 0)) / 1000,
+        attempts,
+        counters.markRequests or 0,
+        confirmations,
+        pendingCount))
+    PRT.Print(("triggers mouseover=%d modifier=%d raidTargetUpdates=%d results requested=%d existing=%d tracked=%d"):format(
+        counters.trigger_mouseover or 0,
+        counters.trigger_modifier or 0,
+        counters.raidTargetUpdates or 0,
+        counters.result_requested or 0,
+        counters.result_existing_mark or 0,
+        counters.result_already_tracked or 0))
+    PRT.Print(("modifier events=%d presses=%d releases=%d slotChanges=%d stateResets=%d"):format(
+        counters.modifierEvents or 0,
+        counters.modifierPresses or 0,
+        counters.modifierReleases or 0,
+        counters.modifierSlotChanges or 0,
+        counters.modifierStateResets or 0))
+    PRT.Print(("skips disabled=%d noPreset=%d noModifier=%d group=%d permission=%d player=%d noGuid=%d noNpc=%d noRule=%d noMark=%d"):format(
+        counters.result_disabled or 0,
+        counters.result_no_preset or 0,
+        counters.result_no_modifier or 0,
+        counters.result_not_grouped or 0,
+        counters.result_no_permission or 0,
+        counters.result_player or 0,
+        counters.result_no_guid or 0,
+        counters.result_no_npc_id or 0,
+        counters.result_no_rule or 0,
+        counters.result_no_available_mark or 0))
+    PRT.Print(("cache builds=%d entries=%d total=%.2fms max=%.2fms; attempts avg=%.3fms max=%.3fms slow=%d"):format(
+        counters.cacheBuilds or 0,
+        counters.cacheEntries or 0,
+        counters.cacheBuildTotalMS or 0,
+        counters.cacheBuildMaxMS or 0,
+        attempts > 0 and ((counters.attemptTotalMS or 0) / attempts) or 0,
+        counters.attemptMaxMS or 0,
+        counters.slowAttempts or 0))
+    PRT.Print(("verification confirmed=%d lost=%d unconfirmed=%d latency avg=%.1fms max=%.1fms"):format(
+        confirmations,
+        counters.verification_target_lost or 0,
+        counters.verification_unconfirmed or 0,
+        confirmations > 0
+            and ((counters.confirmLatencyTotalMS or 0) / confirmations) or 0,
+        counters.confirmLatencyMaxMS or 0))
+
+    local recent = targetMarksRuntimeDebug.recent
+    local first = math.max(1, #recent - 3)
+    for i = first, #recent do
+        PRT.Print("recent " .. recent[i])
+    end
+
+    local modifierRecent = targetMarksRuntimeDebug.modifierRecent
+    local modifierFirst = math.max(1, #modifierRecent - 5)
+    for i = modifierFirst, #modifierRecent do
+        PRT.Print("modifier " .. modifierRecent[i])
     end
 end
 
@@ -407,7 +699,7 @@ local function GetModifierDown(key)
     return false
 end
 
-local function SaveObservedMark(state, guid, markId, name)
+local function SaveObservedMark(state, guid, markId, name, source)
     if not guid or not markId or markId <= 0 then return end
 
     for existingMarkId, info in pairs(state) do
@@ -419,6 +711,7 @@ local function SaveObservedMark(state, guid, markId, name)
     state[markId] = {
         guid = guid,
         name = name or "",
+        source = source,
     }
 end
 
@@ -686,6 +979,7 @@ function PRT:EnsureTargetMarksDBDefaults()
 
     local tm = db.targetMarks
     if tm.enabled == nil then tm.enabled = false end
+    if tm.allowSolo == nil then tm.allowSolo = false end
     tm.activePreset = tm.activePreset or ""
     tm.presets = tm.presets or {}
     tm.modifiers = tm.modifiers or {}
@@ -723,13 +1017,16 @@ function PRT:InvalidateTargetMarksCache()
     self:ResetTargetMarksState()
 end
 
-function PRT:RebuildTargetMarksCache()
-    local preset = self:GetActiveTargetMarksPreset()
+function PRT:RebuildTargetMarksCache(preset)
+    preset = preset or self:GetActiveTargetMarksPreset()
     if not preset then
         self._targetMarksCache = nil
         return nil
     end
 
+    local buildStartMS = targetMarksRuntimeDebug.enabled
+        and TargetMarksNowMS() or nil
+    local entryCount = 0
     local lookup = {}
     for _, slot in ipairs(self.TARGET_MARK_SLOTS) do
         lookup[slot] = {}
@@ -737,6 +1034,7 @@ function PRT:RebuildTargetMarksCache()
 
     for _, group in ipairs(preset.groups) do
         for _, entry in ipairs(group.entries) do
+            entryCount = entryCount + 1
             self:EnsureTargetMarksEntryDefaults(entry)
             if entry.npcId > 0 then
                 for _, slot in ipairs(self.TARGET_MARK_SLOTS) do
@@ -757,14 +1055,31 @@ function PRT:RebuildTargetMarksCache()
         presetName = preset.name,
         lookup = lookup,
     }
+
+    if buildStartMS then
+        local elapsed = math.max(0, TargetMarksNowMS() - buildStartMS)
+        local counters = targetMarksRuntimeDebug.counters
+        CountTargetMarksRuntime("cacheBuilds")
+        CountTargetMarksRuntime("cacheEntries", entryCount)
+        counters.cacheBuildTotalMS =
+            (counters.cacheBuildTotalMS or 0) + elapsed
+        counters.cacheBuildMaxMS =
+            math.max(counters.cacheBuildMaxMS or 0, elapsed)
+    end
     return self._targetMarksCache
 end
 
 function PRT:GetTargetMarksLookup()
-    local preset = self:GetActiveTargetMarksPreset()
-    if not preset then return nil end
-    if not self._targetMarksCache or self._targetMarksCache.presetName ~= preset.name then
-        self:RebuildTargetMarksCache()
+    local db = self:GetDB()
+    local tm = db.targetMarks or {}
+    local presetName = tm.activePreset
+    if not presetName or presetName == "" then return nil end
+
+    if not self._targetMarksCache
+        or self._targetMarksCache.presetName ~= presetName then
+        local preset = self:GetTargetMarksPreset(presetName)
+        if not preset then return nil end
+        self:RebuildTargetMarksCache(preset)
     end
     return self._targetMarksCache and self._targetMarksCache.lookup or nil
 end
@@ -788,50 +1103,138 @@ function PRT:GetActiveTargetMarkSlot()
     return nil
 end
 
-function PRT:HandleTargetMarksModifierChange()
+function PRT:HandleTargetMarksModifierChange(changedKey, keyState)
+    local previousSlot = self._targetMarkActiveSlot
     local slot = self:GetActiveTargetMarkSlot()
-    if slot ~= self._targetMarkActiveSlot then
+    local slotChanged = slot ~= previousSlot
+
+    if targetMarksRuntimeDebug.enabled and changedKey then
+        local isDown = keyState == 1 or keyState == "1"
+        CountTargetMarksRuntime("modifierEvents")
+        CountTargetMarksRuntime(
+            isDown and "modifierPresses" or "modifierReleases")
+
+        local guid = UnitGUID("mouseover")
+        local name = guid and (UnitName("mouseover") or "") or ""
+        local currentMark = guid and (GetRaidTargetIndex("mouseover") or 0) or 0
+        PushTargetMarksModifierRecent(
+            ("%s %s active=%s->%s reset=%s mouseover=%s npc=%s mark=%s"):format(
+                tostring(changedKey),
+                isDown and "down" or "up",
+                tostring(previousSlot or "none"),
+                tostring(slot or "none"),
+                slotChanged and "yes" or "no",
+                guid and (name ~= "" and name or guid) or "none",
+                guid and tostring(self.GetNpcId(guid) or "?") or "-",
+                tostring(currentMark)))
+    end
+
+    if slotChanged then
+        CountTargetMarksRuntime("modifierSlotChanges")
+        CountTargetMarksRuntime("modifierStateResets")
         self._targetMarkActiveSlot = slot
         self:ResetTargetMarksState()
+        if slot then
+            self:TryTargetMarkMouseover("modifier")
+        end
     end
 end
 
-function PRT:TryTargetMarkMouseover()
+function PRT:TryTargetMarkMouseover(trigger)
+    trigger = trigger or "manual"
+    local debugStartMS = BeginTargetMarkAttempt(trigger)
     local db = self:GetDB()
     local tm = db.targetMarks or {}
-    if not tm.enabled then return end
+    if not tm.enabled then
+        FinishTargetMarkAttempt(debugStartMS, "disabled")
+        return false, "disabled"
+    end
 
-    local preset = self:GetActiveTargetMarksPreset()
-    if not preset then return end
+    local presetName = tm.activePreset
+    if not presetName or presetName == "" then
+        FinishTargetMarkAttempt(debugStartMS, "no_preset")
+        return false, "no_preset"
+    end
 
     local slot = self:GetActiveTargetMarkSlot()
-    if not slot then return end
+    if not slot then
+        FinishTargetMarkAttempt(debugStartMS, "no_modifier")
+        return false, "no_modifier"
+    end
 
-    if not IsInGroup() then return end
-    if not (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")) then return end
-    if UnitIsPlayer("mouseover") then return end
+    local inGroup = IsInGroup()
+    if not inGroup and not tm.allowSolo then
+        FinishTargetMarkAttempt(debugStartMS, "not_grouped")
+        return false, "not_grouped"
+    end
+    if inGroup
+        and not (UnitIsGroupLeader("player")
+            or UnitIsGroupAssistant("player")) then
+        FinishTargetMarkAttempt(debugStartMS, "no_permission")
+        return false, "no_permission"
+    end
+    if UnitIsPlayer("mouseover") then
+        FinishTargetMarkAttempt(debugStartMS, "player")
+        return false, "player"
+    end
 
     local guid = UnitGUID("mouseover")
-    if not guid then return end
+    if not guid then
+        FinishTargetMarkAttempt(debugStartMS, "no_guid")
+        return false, "no_guid"
+    end
 
     self._targetMarkState = self._targetMarkState or {}
     if UnitAlreadyTracked(self._targetMarkState, guid) then
-        return
+        FinishTargetMarkAttempt(debugStartMS, "already_tracked")
+        return false, "already_tracked"
     end
 
     local name = UnitName("mouseover") or ""
     local currentMark = GetRaidTargetIndex("mouseover")
     if currentMark and currentMark > 0 then
-        SaveObservedMark(self._targetMarkState, guid, currentMark, name)
-        return
+        SaveObservedMark(
+            self._targetMarkState,
+            guid,
+            currentMark,
+            name,
+            targetMarksRuntimeDebug.enabled
+                and ("existing:" .. trigger) or nil)
+        if targetMarksRuntimeDebug.enabled then
+            PushTargetMarksRuntimeRecent(
+                ("already marked %s npc=%s mark=%s trigger=%s"):format(
+                    name ~= "" and name or guid,
+                    tostring(self.GetNpcId(guid) or "?"),
+                    tostring(currentMark),
+                    trigger))
+        end
+        FinishTargetMarkAttempt(debugStartMS, "existing_mark")
+        return false, "existing_mark"
     end
 
     local npcId = self.GetNpcId(guid)
-    if not npcId then return end
+    if not npcId then
+        FinishTargetMarkAttempt(debugStartMS, "no_npc_id")
+        return false, "no_npc_id"
+    end
 
     local lookup = self:GetTargetMarksLookup()
-    local marks = lookup and lookup[slot] and lookup[slot][npcId]
-    if not marks then return end
+    if not lookup then
+        FinishTargetMarkAttempt(debugStartMS, "no_preset")
+        return false, "no_preset"
+    end
+    local marks = lookup[slot] and lookup[slot][npcId]
+    if not marks then
+        if targetMarksRuntimeDebug.enabled then
+            PushTargetMarksRuntimeRecent(
+                ("no rule %s npc=%s slot=%s"):format(
+                    name ~= "" and name or guid,
+                    tostring(npcId),
+                    tostring(slot)))
+        end
+        FinishTargetMarkAttempt(debugStartMS, "no_rule")
+        return false, "no_rule"
+    end
 
     local chosen
     for _, markId in ipairs(marks) do
@@ -841,10 +1244,47 @@ function PRT:TryTargetMarkMouseover()
         end
     end
 
-    if not chosen then return end
+    if not chosen then
+        if targetMarksRuntimeDebug.enabled then
+            local configured = {}
+            local reserved = {}
+            for _, markId in ipairs(marks) do
+                configured[#configured + 1] = tostring(markId)
+                local holder = self._targetMarkState[markId]
+                if holder then
+                    reserved[#reserved + 1] = ("%s:%s(%s)"):format(
+                        tostring(markId),
+                        holder.name ~= "" and holder.name or holder.guid,
+                        holder.source or "runtime")
+                end
+            end
+            PushTargetMarksRuntimeRecent(
+                ("no available mark %s npc=%s slot=%s configured=%s reserved=%s"):format(
+                    name ~= "" and name or guid,
+                    tostring(npcId),
+                    tostring(slot),
+                    table.concat(configured, ","),
+                    #reserved > 0 and table.concat(reserved, ",") or "none"))
+        end
+        FinishTargetMarkAttempt(debugStartMS, "no_available_mark")
+        return false, "no_available_mark"
+    end
 
+    ScheduleTargetMarkVerification(
+        guid, npcId, name, chosen, trigger)
     SetRaidTarget("mouseover", chosen)
-    SaveObservedMark(self._targetMarkState, guid, chosen, name)
+    if targetMarksRuntimeDebug.enabled then
+        ObserveTargetMarkVerification("immediate", guid)
+    end
+    SaveObservedMark(
+        self._targetMarkState,
+        guid,
+        chosen,
+        name,
+        targetMarksRuntimeDebug.enabled
+            and ("requested:" .. trigger) or nil)
+    FinishTargetMarkAttempt(debugStartMS, "requested")
+    return true, "requested"
 end
 
 function PRT:InitTargetMarks()
@@ -858,14 +1298,20 @@ function PRT:InitTargetMarks()
     f:RegisterEvent("PLAYER_ENTERING_WORLD")
     f:RegisterEvent("MODIFIER_STATE_CHANGED")
     f:RegisterEvent("UPDATE_MOUSEOVER_UNIT")
-    f:SetScript("OnEvent", function(_, event)
+    if targetMarksRuntimeDebug.enabled then
+        f:RegisterEvent("RAID_TARGET_UPDATE")
+    end
+    f:SetScript("OnEvent", function(_, event, ...)
         if event == "PLAYER_ENTERING_WORLD" then
             PRT:ResetTargetMarksState()
             PRT:HandleTargetMarksModifierChange()
         elseif event == "MODIFIER_STATE_CHANGED" then
-            PRT:HandleTargetMarksModifierChange()
+            PRT:HandleTargetMarksModifierChange(...)
         elseif event == "UPDATE_MOUSEOVER_UNIT" then
-            PRT:TryTargetMarkMouseover()
+            PRT:TryTargetMarkMouseover("mouseover")
+        elseif event == "RAID_TARGET_UPDATE" then
+            CountTargetMarksRuntime("raidTargetUpdates")
+            ObserveTargetMarkVerification("event")
         end
     end)
 

@@ -18,7 +18,45 @@ Open the addon by left clicking the minimap or typing:
 4. Left-click a composition for a fast group-membership sort.
 5. Shift + left-click for an exact group-and-position sort.
 
-Group rearrangement and player marking require raid leader or raid assistant permissions.
+While grouped, group rearrangement and player marking require raid leader or raid assistant permissions.
+
+## Recent Release Highlights
+
+### 1.3.3 — Raid Roles and Reliability Fixes
+
+Version 1.3.3 adds direct raid-role controls and improves server-sensitive loot, Target Marks, and Raid Check behaviour.
+
+*   Shift-click live Raid Groups cells to toggle assistant status, or Ctrl-click to securely toggle main-tank assignment. Role icons update immediately while the live roster confirms each change.
+*   Target Marks can optionally mark while solo for rule testing and now reacts immediately when a configured modifier is pressed over the current mouseover target.
+*   Loot settings wait for the requested method and master looter to be confirmed before applying the threshold, and Classic API rejections are reported instead of treated as success.
+*   World Buff chat reports list Chronobooned players separately from players who are missing World Buffs.
+*   PRT now reuses its minimap artwork in the in-game AddOns list.
+
+### 1.3.2 — Performance and Interface Improvements
+
+Version 1.3.2 makes PRT lighter during regular use and brings older configuration controls in line with the newer interface.
+
+*   Reduced memory use and improved responsiveness when scrolling large Target Marks Preset Groupings, running Raid Checks, using Test Preview, and opening Auto Match or the Alias Database.
+*   Standardized configuration dropdowns across the addon, including smooth hover highlighting while preserving dynamic raid-group lists, class colours, and raid-marker icons.
+*   The main configuration window now remembers its size and position between sessions. Notifications, dropdowns, and colour pickers also layer more reliably above other PRT windows.
+*   Updated the default notification and Floating Raid Group List colour to match the PRT theme.
+*   Fixed valid overall PRT Profile imports failing with a misleading `0` message.
+*   Fixed a Target Marks editor error that could occur when changing tabs while a raid-marker dropdown was open.
+*   Moved developer troubleshooting commands to a dedicated `/prt debug` index so the normal help output stays focused on player commands.
+
+### 1.3.1 — Raid Check Reporting and Alias Management
+
+Version 1.3.1 expands the information Raid Check can share with a group and adds complete tools for moving, combining, and maintaining alias data.
+
+*   Click Raid Check columns, player cells, or displayed Potion icons to report ready status, preparation, buffs, durability, warning effects, and potion results directly to group chat.
+*   Use context-sensitive Shift-click reports for additional details, including player-specific buff information and raid positions.
+*   Added `!logs`, `!disallowed`, `!banned`, and `!invalid` aliases for reporting detected Logs! warning effects and affected players.
+*   Import or export the complete Alias Database, with clear choices for merging, renaming, or skipping duplicate aliases and realm-aware characters.
+*   Merge aliases directly through live search and clickable suggestions without creating duplicate character entries.
+*   Choose from three compact Profile Float label styles and navigate a reorganized, scrollable Settings page.
+*   Improved the Alias Database window, confirmation prompts, popup layering, and class selection with clearer sizing, class colours, and hover feedback.
+
+See the [changelog](CHANGELOG.md) for the complete release history.
 
 ## Raid Groups
 
@@ -30,6 +68,7 @@ Build and save complete 40-player raid compositions in an eight-group roster edi
 *   Optionally force players into exact positions within each group with a slower precise sort.
 *   Quickly identify missing players and players who are not part of the selected roster.
 *   Warn when the same realm-qualified character appears in multiple roster positions.
+*   Shift-click a live player to toggle assistant status, or Ctrl-click to toggle main-tank assignment; both shortcuts are unavailable during combat.
 *   Import multiple named compositions from a single text block.
 *   Export one roster in selectable eight-column, paired-group, single-column, or PRT format, or export every saved roster with composition headers.
 *   Automatically refresh roster information as players join or leave the raid.
@@ -100,6 +139,7 @@ Apply raid icons to NPCs by holding a configured modifier and moving the mouse o
 *   Organize NPC rules into named groupings such as raids, dungeons, or encounter sections.
 *   Store all groupings inside shareable presets.
 *   Import and export complete presets or individual groupings.
+*   Optionally allow marking while solo to test configured NPC rules outside a group.
 
 ## Invite & Loot Tools
 
@@ -154,7 +194,7 @@ Custom zones can also be added by name or captured directly from the player's cu
 
 When you enter a selected zone as group leader—or receive leadership while already there—PRT shows a one-time comparison of the configured and current loot settings. Choose **Apply Configured** to apply the preset or **Keep Current Settings** to leave the group unchanged. PRT does not continuously enforce the preset, so manual changes made afterward are preserved.
 
-The prompt can be restricted to raid groups. When Master Loot is configured, automatic master-looter assignment is optional. Enable it and enter a character to assign that player. With assignment disabled, PRT preserves an existing master looter; if Master Loot is not active yet, PRT enables it and lets the game select its normal default. Method, master-looter, and threshold changes are compared independently so an unchanged Master Loot setting is not reapplied.
+The prompt can be restricted to raid groups. When Master Loot is configured, automatic master-looter assignment is optional. Enable it and enter a character to assign that player. With assignment disabled, PRT preserves an existing master looter; if Master Loot is not active yet, PRT uses the group leader because Classic requires a master looter. PRT waits until the requested method and master looter are observable before applying the threshold. Method, master-looter, and threshold changes are compared independently so an unchanged Master Loot setting is not reapplied.
 
 ### Loot to Chat
 
@@ -278,6 +318,7 @@ Manual feature toggles also produce a focused on-screen status notification.
 | <code>/prt reset</code> |Reset Group Auto Swap kill counters.                  |
 | <code>/prt markreset</code> |Reset Player Auto Marking counters.                   |
 | <code>/prt resetframe</code> |Restore the configuration window to its default size. |
+| <code>/prt debug</code> |Display the developer diagnostic command index.        |
 | <code>/prt who CharacterName</code> |Find the alias containing a stored character.         |
 | <code>/prt alias AliasName</code> |List the characters stored under an alias.            |
 

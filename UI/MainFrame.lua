@@ -789,6 +789,8 @@ do
     local rosterRefreshFrame = CreateFrame("Frame")
     rosterRefreshFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
     rosterRefreshFrame:RegisterEvent("RAID_ROSTER_UPDATE")
+    rosterRefreshFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED")
+    rosterRefreshFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
     rosterRefreshFrame._pending = false
     rosterRefreshFrame:SetScript("OnEvent", function(self)
         if self._pending then return end

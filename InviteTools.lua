@@ -1273,6 +1273,32 @@ local function GetLootThresholdCompat()
     if GetLootThreshold then return GetLootThreshold() end
 end
 
+local function SetLootMethodCompat(method, lootMaster)
+    -- Supplying a valid group member matches the call shape used by the
+    -- Classic client UI and established raid tools. The argument is ignored
+    -- for non-Master methods but avoids client-specific rejected/no-op calls.
+    if (not lootMaster or lootMaster == "") and UnitName then
+        lootMaster = UnitName("player")
+    end
+    if C_PartyInfo and C_PartyInfo.SetLootMethod then
+        local callOk, apiSuccess = pcall(
+            C_PartyInfo.SetLootMethod, method.id, lootMaster)
+        if not callOk then return false, apiSuccess end
+        -- The namespaced Classic API reports a rejected request by returning
+        -- false. pcall itself still succeeds in that case, so both results
+        -- must be checked.
+        if apiSuccess == false then
+            return false, "the game rejected the requested loot method"
+        end
+        return true
+    elseif SetLootMethod then
+        local callOk, err = pcall(SetLootMethod, method.value, lootMaster)
+        if not callOk then return false, err end
+        return true
+    end
+    return false, "this client does not expose a loot-method API"
+end
+
 function PRT:GetCurrentInviteLootSettings()
     local rawMethod, masterPartyId, masterRaidId = GetLootMethodCompat()
     local method = lootMethodById[tonumber(rawMethod)]
@@ -1326,10 +1352,13 @@ function PRT:GetInviteLootDescription()
                 .. (masterLooter ~= "" and masterLooter or "Not configured")
         else
             local current = self:GetCurrentInviteLootSettings()
-            local currentName = current.method.value == "master"
-                and (current.masterLooter or "Unknown")
-                or "none; game default when enabling Master Loot"
-            description = description .. "\nMaster looter: Keep current (" .. currentName .. ")"
+            if current.method.value == "master" then
+                description = description .. "\nMaster looter: Keep current ("
+                    .. (current.masterLooter or "Unknown") .. ")"
+            else
+                description = description
+                    .. "\nMaster looter: Group leader (required when enabling Master Loot)"
+            end
         end
     end
     return description .. "\nLoot threshold: " .. threshold.text
@@ -1346,6 +1375,130 @@ function PRT:ResolveInviteMasterLooter()
         end
     end
     return nil, configured
+end
+
+local INVITE_LOOT_APPLY_TIMEOUT = 12
+local INVITE_LOOT_APPLY_POLL_INTERVAL = 0.25
+
+local function SetInviteLootThresholdCompat(threshold)
+    if not SetLootThreshold then
+        return false, "this client does not expose a loot-threshold API"
+    end
+    local ok, err = pcall(SetLootThreshold, threshold)
+    if not ok then return false, err end
+    return true
+end
+
+local function ClearPendingInviteLootApply()
+    if not PRT._inviteLootApplyState then return end
+    PRT._inviteLootApplyState = nil
+    if PRT.UpdateInviteToolsListeners then
+        PRT:UpdateInviteToolsListeners()
+    end
+end
+
+local function PendingInviteLootContextIsValid(state)
+    local store = GetConfig()
+    local cfg = store.loot
+    if store.enabled == false or not cfg.enabled then
+        return false, "Invite & Loot automation was disabled"
+    end
+    if cfg ~= state.config
+        or cfg.method ~= state.method.value
+        or tonumber(cfg.threshold) ~= state.threshold
+        or (cfg.assignMasterLooter and true or false) ~= state.assignMasterLooter then
+        return false, "The configured loot settings changed"
+    end
+    if state.assignMasterLooter
+        and PRT:GetPlayerIdentityKey(cfg.masterLooter or "")
+            ~= state.masterIdentity then
+        return false, "The configured master looter changed"
+    end
+
+    local zone = PRT:GetCurrentInviteLootZone()
+    if not PRT:IsInviteLootZoneEnabled(zone, cfg) then
+        return false, "The configured loot zone changed"
+    end
+    if not IsGrouped() or not IsGroupLeader() then
+        return false, "You are no longer group leader"
+    end
+    if cfg.onlyInRaid and (not IsInRaid or not IsInRaid()) then
+        return false, "You are no longer in a raid group"
+    end
+    return true
+end
+
+local function PendingInviteLootMethodIsConfirmed(state, current)
+    if current.method.value ~= state.method.value then return false end
+    if state.method.value ~= "master" or state.masterIdentity == "" then
+        return true
+    end
+    return PRT:GetPlayerIdentityKey(current.masterLooter or "")
+        == state.masterIdentity
+end
+
+local function CompletePendingInviteLootApply(state)
+    ClearPendingInviteLootApply()
+    PRT.Print(("Applied %s with %s threshold."):format(
+        state.methodSummary, state.thresholdText))
+    return true
+end
+
+local function ProcessPendingInviteLootApply()
+    local state = PRT._inviteLootApplyState
+    if not state then return false end
+
+    local valid, reason = PendingInviteLootContextIsValid(state)
+    if not valid then
+        ClearPendingInviteLootApply()
+        PRT.Print(reason .. "; the loot threshold was not changed.")
+        return true
+    end
+
+    local current = PRT:GetCurrentInviteLootSettings()
+    if not PendingInviteLootMethodIsConfirmed(state, current) then
+        return false
+    end
+
+    if state.phase == "waiting_method" then
+        if tonumber(current.threshold.value) == state.threshold then
+            return CompletePendingInviteLootApply(state)
+        end
+
+        -- The server has now acknowledged the requested method (and master
+        -- looter, when applicable). Only now is it safe to set the threshold;
+        -- sending both requests together can replay the old loot method.
+        state.phase = "waiting_threshold"
+        local ok, err = SetInviteLootThresholdCompat(state.threshold)
+        if not ok then
+            ClearPendingInviteLootApply()
+            PRT.Print("Unable to set loot threshold: " .. tostring(err))
+            return true
+        end
+        current = PRT:GetCurrentInviteLootSettings()
+    end
+
+    if state.phase == "waiting_threshold"
+        and PendingInviteLootMethodIsConfirmed(state, current)
+        and tonumber(current.threshold.value) == state.threshold then
+        return CompletePendingInviteLootApply(state)
+    end
+    return false
+end
+
+local function SchedulePendingInviteLootApplyPoll(state)
+    local function Poll()
+        if PRT._inviteLootApplyState ~= state then return end
+        ProcessPendingInviteLootApply()
+        if PRT._inviteLootApplyState ~= state then return end
+        if Now() >= state.deadline then
+            ClearPendingInviteLootApply()
+            PRT.Print("The configured loot method and threshold were not confirmed; the operation stopped.")
+            return
+        end
+        C_Timer.After(INVITE_LOOT_APPLY_POLL_INTERVAL, Poll)
+    end
+    C_Timer.After(INVITE_LOOT_APPLY_POLL_INTERVAL, Poll)
 end
 
 function PRT:ApplyInviteLootSettings()
@@ -1367,6 +1520,11 @@ function PRT:ApplyInviteLootSettings()
     if cfg.onlyInRaid and (not IsInRaid or not IsInRaid()) then
         PRT.Print("Loot settings were not applied because you are not in a raid group.")
         return false
+    end
+    -- A new confirmation supersedes any older in-flight request, including
+    -- one that is still waiting for delayed server acknowledgement.
+    if self._inviteLootApplyState then
+        ClearPendingInviteLootApply()
     end
 
     local method = lootMethodByValue[cfg.method] or lootMethodByValue.group
@@ -1399,43 +1557,23 @@ function PRT:ApplyInviteLootSettings()
             setLootMethod = false
             masterName = current.masterLooter
         else
-            -- Enabling Master Loot without an explicit assignee lets the game
-            -- choose its normal default master looter.
+            -- Classic requires a loot-master name when Master Loot is enabled.
+            -- With automatic assignment disabled there is no existing master
+            -- looter to preserve, so use the group leader and make that fallback
+            -- explicit in the confirmation prompt.
             setLootMethod = true
-            masterName = nil
-        end
-    end
-
-    local ok
-    local err
-    if setLootMethod then
-        if C_PartyInfo and C_PartyInfo.SetLootMethod then
-            ok, err = pcall(C_PartyInfo.SetLootMethod, method.id, masterName)
-        elseif SetLootMethod then
-            ok, err = pcall(SetLootMethod, method.value, masterName)
-        else
-            PRT.Print("This client does not expose a loot-method API.")
-            return false
-        end
-        if ok == false then
-            PRT.Print("Unable to set loot method: " .. tostring(err))
-            return false
+            local playerName, playerRealm = self:GetUnitIdentity("player")
+            masterName = self:MakeCharacterFullName(
+                playerName, playerRealm, false)
+            if masterName == "" then
+                PRT.Print("Unable to identify the group leader for Master Loot.")
+                return false
+            end
         end
     end
 
     local threshold = tonumber(cfg.threshold) or 1
     local setLootThreshold = tonumber(current.threshold.value) ~= threshold
-    if setLootThreshold then
-        C_Timer.After(setLootMethod and 0.5 or 0, function()
-            if SetLootThreshold and IsGroupLeader() then
-                local thresholdOk, thresholdErr = pcall(SetLootThreshold, threshold)
-                if thresholdOk == false then
-                    PRT.Print("Unable to set loot threshold: " .. tostring(thresholdErr))
-                end
-            end
-        end)
-    end
-
     local methodSummary = method.text
     if method.value == "master" then
         if cfg.assignMasterLooter then
@@ -1444,15 +1582,53 @@ function PRT:ApplyInviteLootSettings()
             methodSummary = methodSummary .. " (kept "
                 .. (masterName or "current master looter") .. ")"
         else
-            methodSummary = methodSummary .. " (game default master looter)"
+            methodSummary = methodSummary .. " (" .. masterName .. ")"
         end
     end
     if not setLootMethod and not setLootThreshold then
         PRT.Print("Configured loot settings are already active; no changes were needed.")
         return true
     end
-    PRT.Print(("Applied %s with %s threshold."):format(
-        methodSummary, (lootThresholdByValue[threshold] or lootThresholdByValue[1]).plainText))
+
+    if not setLootMethod then
+        local ok, err = SetInviteLootThresholdCompat(threshold)
+        if not ok then
+            PRT.Print("Unable to set loot threshold: " .. tostring(err))
+            return false
+        end
+        PRT.Print(("Applied %s with %s threshold."):format(
+            methodSummary,
+            (lootThresholdByValue[threshold] or lootThresholdByValue[1]).plainText))
+        return true
+    end
+
+    local state = {
+        config = cfg,
+        method = method,
+        masterIdentity = method.value == "master"
+            and self:GetPlayerIdentityKey(masterName or "") or "",
+        assignMasterLooter = cfg.assignMasterLooter and true or false,
+        threshold = threshold,
+        thresholdText = (lootThresholdByValue[threshold]
+            or lootThresholdByValue[1]).plainText,
+        methodSummary = methodSummary,
+        phase = "waiting_method",
+        deadline = Now() + INVITE_LOOT_APPLY_TIMEOUT,
+    }
+    self._inviteLootApplyState = state
+    self:UpdateInviteToolsListeners()
+
+    local ok, err = SetLootMethodCompat(method, masterName)
+    if not ok then
+        ClearPendingInviteLootApply()
+        PRT.Print("Unable to set loot method: " .. tostring(err))
+        return false
+    end
+
+    if ProcessPendingInviteLootApply() then return true end
+    PRT.Print(("Applying %s; waiting for the game to confirm the loot method before setting the %s threshold."):format(
+        methodSummary, state.thresholdText))
+    SchedulePendingInviteLootApplyPoll(state)
     return true
 end
 
@@ -1489,10 +1665,13 @@ function PRT:ShowInviteLootPrompt(zone)
         local masterLooter = PRT.Trim(cfg.masterLooter or "")
         local masterText
         if not cfg.assignMasterLooter then
-            local currentName = current.method.value == "master"
-                and (current.masterLooter or "Unknown")
-                or "none; game default when enabling Master Loot"
-            masterText = "|cffffffffKeep current (" .. currentName .. ")|r"
+            if current.method.value == "master" then
+                masterText = "|cffffffffKeep current ("
+                    .. (current.masterLooter or "Unknown") .. ")|r"
+            else
+                masterText = "|cffffffffGroup leader"
+                    .. " (required when enabling Master Loot)|r"
+            end
         elseif masterLooter == "" then
             masterText = "|cffff5555Not configured|r"
         else
@@ -1903,6 +2082,12 @@ function PRT:UpdateInviteToolsListeners()
         frame:RegisterEvent("ZONE_CHANGED")
         frame:RegisterEvent("ZONE_CHANGED_INDOORS")
     end
+    if self._inviteLootApplyState then
+        -- The threshold must wait for the server-confirmed loot method. This
+        -- event is the fastest signal; bounded polling remains as a fallback
+        -- for clients that fire it before GetLootMethod reflects the change.
+        frame:RegisterEvent("PARTY_LOOT_METHOD_CHANGED")
+    end
     if automationEnabled and cfg.lootToChat and cfg.lootToChat.enabled then
         frame:RegisterEvent("LOOT_OPENED")
     end
@@ -1952,9 +2137,12 @@ function PRT:InitInviteTools()
             if GetConfig().enabled and GetConfig().autoPromote.enabled then PRT:RequestAutoPromote() end
             if PRT._raidInviteQueueState then PRT:ProcessRaidInviteQueue() end
             if PRT._inviteToolsReinviteState then PRT:ProcessSnapshotReinvite() end
+            if PRT._inviteLootApplyState then ProcessPendingInviteLootApply() end
             if GetConfig().enabled and GetConfig().loot.enabled then
                 C_Timer.After(0.2, function() PRT:CheckInviteLootPrompt(false) end)
             end
+        elseif event == "PARTY_LOOT_METHOD_CHANGED" then
+            ProcessPendingInviteLootApply()
         elseif event == "GUILD_ROSTER_UPDATE" then
             PRT:RequestAutoPromote()
         elseif event == "LOOT_OPENED" then

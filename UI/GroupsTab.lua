@@ -14,6 +14,62 @@ local GRP_PAD  = 2
 local TOP_BAR  = 24
 local QUICK_W  = 240
 
+local ROLE_ICON_SIZE = 14
+local ROLE_ICON_GAP = 1
+local ROLE_ICON_RIGHT = -3
+local DUPLICATE_ICON_SIZE = 15
+local ROLE_PENDING_TIMEOUT = 4
+
+PRT._GROUP_ROLE_CONTROL_CONFIG = PRT._GROUP_ROLE_CONTROL_CONFIG or {
+    assistantIcon = "Interface\\GroupFrame\\UI-Group-AssistantIcon",
+    leaderIcon = "Interface\\GroupFrame\\UI-Group-LeaderIcon",
+    mainTankIcon = "Interface\\GroupFrame\\UI-Group-MainTankIcon",
+    shortcutHint = "Shift+Click: Toggle Assistant  |  Ctrl+Click: Toggle Main Tank",
+    useOnKeyDown = false,
+    secureVisibility =
+        "[combat] hide; [mod:ctrl,mod:shift] hide; [mod:ctrl] show; hide",
+    iconLayout = { "duplicate", "mainTank", "rank" },
+}
+local ROLE_CONTROL = PRT._GROUP_ROLE_CONTROL_CONFIG
+local ASSISTANT_ICON = ROLE_CONTROL.assistantIcon
+local LEADER_ICON = ROLE_CONTROL.leaderIcon
+local MAIN_TANK_ICON = ROLE_CONTROL.mainTankIcon
+
+PRT._groupsRoleDebugEnabled = PRT._groupsRoleDebugEnabled and true or false
+
+function PRT:SetGroupsRoleDebug(enabled)
+    self._groupsRoleDebugEnabled = enabled and true or false
+    if self.groupsPanel and self.groupsPanel.SetRoleDebugVisuals then
+        self.groupsPanel:SetRoleDebugVisuals(self._groupsRoleDebugEnabled)
+    end
+    PRT.Print("Raid Groups role debugging "
+        .. (self._groupsRoleDebugEnabled and "enabled." or "disabled."))
+    if self._groupsRoleDebugEnabled then
+        PRT.Print("Hold Ctrl over a Raid Groups cell: active tank hit regions are tinted cyan.")
+        PRT.Print("After testing, use /prt debug roles to print the captured trace.")
+    end
+end
+
+function PRT:DumpGroupsRoleDebug()
+    if self.groupsPanel and self.groupsPanel.DumpRoleDebug then
+        self.groupsPanel:DumpRoleDebug()
+    else
+        PRT.Print("Raid Groups role debug: open the PRT Raid Groups tab first.")
+    end
+end
+
+local function IsInCombat()
+    return InCombatLockdown and InCombatLockdown() or false
+end
+
+local function IsShiftDown()
+    return IsShiftKeyDown and IsShiftKeyDown() or false
+end
+
+local function IsControlDown()
+    return IsControlKeyDown and IsControlKeyDown() or false
+end
+
 ---------------------------------------------------------------------------
 -- Cursor-to-slot hit test
 ---------------------------------------------------------------------------
@@ -59,6 +115,26 @@ local function ClearSlotBorder(panel, slotIdx)
     end
 end
 
+local function LayoutSlotIcons(panel, slotIdx)
+    local eb = panel.slots[slotIdx]
+    if not eb then return end
+
+    local x = ROLE_ICON_RIGHT
+    local function Place(texture, size)
+        if not texture or not texture:IsShown() then return end
+        texture:ClearAllPoints()
+        texture:SetPoint("RIGHT", x, 0)
+        x = x - size - ROLE_ICON_GAP
+    end
+
+    -- Place from right to left so duplicate warnings always remain rightmost.
+    Place(panel.duplicateWarnings[slotIdx], DUPLICATE_ICON_SIZE)
+    Place(panel.mainTankIcons[slotIdx], ROLE_ICON_SIZE)
+    Place(panel.rankIcons[slotIdx], ROLE_ICON_SIZE)
+
+    eb:SetTextInsets(6, math.max(6, -x + 2), 0, 0)
+end
+
 ---------------------------------------------------------------------------
 -- Build
 ---------------------------------------------------------------------------
@@ -70,6 +146,11 @@ function PRT:BuildGroupsTab()
     panel.slots    = {}   -- [1..40] EditBox
     panel.overlays = {}   -- [1..40] overlay Buttons for drag
     panel.duplicateWarnings = {}
+    panel.rankIcons = {}
+    panel.mainTankIcons = {}
+    panel.mainTankButtons = {}
+    panel.pendingRoleStates = {}
+    panel._roleDebugTrace = {}
     panel.duplicateSlots = {}
     panel.dirty    = false
 
@@ -77,6 +158,210 @@ function PRT:BuildGroupsTab()
     local ShowRenameCompPopup
     local ShowDeleteCompPopup
     local ShowDeleteAllCompsPopup
+
+    local function RoleDebug(message, ...)
+        if not PRT._groupsRoleDebugEnabled then return end
+        if select("#", ...) > 0 then
+            message = tostring(message):format(...)
+        end
+        message = tostring(message)
+        panel._roleDebugTrace[#panel._roleDebugTrace + 1] = message
+        if #panel._roleDebugTrace > 12 then
+            table.remove(panel._roleDebugTrace, 1)
+        end
+        PRT.Print("[Role debug] " .. message)
+    end
+
+    local function GetSlotRaidMember(slotIdx, raid)
+        local eb = panel.slots[slotIdx]
+        if not eb then return nil, "" end
+        local raw = PRT.Trim(eb:GetText())
+        local key = PRT:GetPlayerIdentityKey(raw)
+        return key ~= "" and raid[key] or nil, key
+    end
+
+    local function CanManageAssistants()
+        return IsInRaid and IsInRaid()
+            and UnitIsGroupLeader and UnitIsGroupLeader("player")
+    end
+
+    local function CanManageMainTanks()
+        if not IsInRaid or not IsInRaid() then return false end
+        return (UnitIsGroupLeader and UnitIsGroupLeader("player"))
+            or (UnitIsGroupAssistant and UnitIsGroupAssistant("player"))
+            or false
+    end
+
+    local function IsPanelVisible()
+        if panel.IsVisible then return panel:IsVisible() end
+        return panel:IsShown()
+    end
+
+    local function RoleStateNow()
+        return GetTime and GetTime() or 0
+    end
+
+    local function GetPendingRoleState(identityKey)
+        local pending = identityKey and panel.pendingRoleStates[identityKey]
+        if pending and pending.expires <= RoleStateNow() then
+            panel.pendingRoleStates[identityKey] = nil
+            return nil
+        end
+        return pending
+    end
+
+    local function GetEffectiveRoleState(identityKey, member)
+        local rank = member and (member.rank or 0) or 0
+        local isMainTank = member and member.isMainTank or false
+        local pending = GetPendingRoleState(identityKey)
+        if not pending then return rank, isMainTank end
+
+        -- An authoritative match completes that pending part of the change.
+        if pending.rank ~= nil and rank == pending.rank then
+            pending.rank = nil
+        end
+        if pending.isMainTank ~= nil and isMainTank == pending.isMainTank then
+            pending.isMainTank = nil
+        end
+
+        if pending.rank ~= nil then rank = pending.rank end
+        if pending.isMainTank ~= nil then isMainTank = pending.isMainTank end
+        if pending.rank == nil and pending.isMainTank == nil then
+            panel.pendingRoleStates[identityKey] = nil
+        end
+        return rank, isMainTank
+    end
+
+    local function SetPendingRoleState(identityKey, field, value)
+        if not identityKey or identityKey == "" then return end
+        local pending = panel.pendingRoleStates[identityKey] or {}
+        local expires = RoleStateNow() + ROLE_PENDING_TIMEOUT
+        pending[field] = value
+        pending.expires = expires
+        panel.pendingRoleStates[identityKey] = pending
+
+        if C_Timer and C_Timer.After then
+            C_Timer.After(ROLE_PENDING_TIMEOUT + 0.1, function()
+                local current = panel.pendingRoleStates[identityKey]
+                if current and current.expires == expires then
+                    panel.pendingRoleStates[identityKey] = nil
+                    if panel.RefreshHighlights then panel:RefreshHighlights() end
+                end
+            end)
+        end
+    end
+
+    local function ScheduleMainTankDebugProbes(identityKey, unit, desired)
+        if not PRT._groupsRoleDebugEnabled or not C_Timer or not C_Timer.After then return end
+        for _, delay in ipairs({ 0.1, 1, 3 }) do
+            local probeDelay = delay
+            C_Timer.After(probeDelay, function()
+                if not PRT._groupsRoleDebugEnabled then return end
+                local raid = PRT.GetRaidRoster()
+                local member = identityKey and raid[identityKey]
+                local exact = GetPartyAssignment
+                    and GetPartyAssignment("MAINTANK", unit, true) and true or false
+                RoleDebug("probe +%.1fs unit=%s exists=%s desired=%s assignment=%s roster=%s",
+                    probeDelay,
+                    tostring(unit),
+                    tostring(UnitExists and UnitExists(unit) and true or false),
+                    tostring(desired),
+                    tostring(exact),
+                    tostring(member and member.isMainTank or false))
+            end)
+        end
+    end
+
+    local function ToggleAssistantRole(slotIdx)
+        if IsInCombat() then
+            PRT.Print("Raid role shortcuts are unavailable during combat.")
+            return
+        end
+        if not IsInRaid or not IsInRaid() then
+            PRT.Print("You must be in a raid to change raid roles.")
+            return
+        end
+        if not CanManageAssistants() then
+            PRT.Print("You must be raid leader to change assistants.")
+            return
+        end
+
+        local raid = PRT.GetRaidRoster()
+        local member, identityKey = GetSlotRaidMember(slotIdx, raid)
+        if not member then
+            PRT.Print("That player is not in the current raid.")
+            return
+        end
+        if member.rank == 2 then
+            PRT.Print("The raid leader cannot be toggled as an assistant.")
+            return
+        end
+
+        local effectiveRank = GetEffectiveRoleState(identityKey, member)
+        local pending = GetPendingRoleState(identityKey)
+        if pending and pending.rank ~= nil then
+            PRT.Print("That assistant change is still being applied.")
+            return
+        end
+
+        if effectiveRank == 1 then
+            if not DemoteAssistant then
+                PRT.Print("Assistant demotion is unavailable on this client.")
+                return
+            end
+            DemoteAssistant(member.name)
+            if PRT._inviteToolsManualDemotions then
+                PRT._inviteToolsManualDemotions[identityKey] = true
+            end
+            SetPendingRoleState(identityKey, "rank", 0)
+        else
+            if not PromoteToAssistant then
+                PRT.Print("Assistant promotion is unavailable on this client.")
+                return
+            end
+            if PRT._inviteToolsManualDemotions then
+                PRT._inviteToolsManualDemotions[identityKey] = nil
+            end
+            PromoteToAssistant(member.name)
+            SetPendingRoleState(identityKey, "rank", 1)
+        end
+        panel:RefreshRoleIndicators(raid)
+    end
+
+    local function HandleModifierClick(slotIdx, button)
+        if button ~= "LeftButton" then return false end
+
+        local shift = IsShiftDown()
+        local control = IsControlDown()
+        if not shift and not control then return false end
+
+        if shift and control then
+            PRT.Print("Use Shift or Ctrl for one raid role at a time.")
+            return true
+        end
+        if shift then
+            ToggleAssistantRole(slotIdx)
+            return true
+        end
+
+        -- A valid Ctrl-click is intercepted by the secure main-tank button.
+        -- This path explains why the secure layer was deliberately unavailable.
+        RoleDebug("insecure cell layer received Ctrl-click for slot=%d; secure hit region missed",
+            slotIdx)
+        if IsInCombat() then
+            PRT.Print("Raid role shortcuts are unavailable during combat.")
+        elseif not IsInRaid or not IsInRaid() then
+            PRT.Print("You must be in a raid to change raid roles.")
+        else
+            local member = GetSlotRaidMember(slotIdx, PRT.GetRaidRoster())
+            if not member then
+                PRT.Print("That player is not in the current raid.")
+            elseif not CanManageMainTanks() then
+                PRT.Print("You must be raid leader or assistant to change main tanks.")
+            end
+        end
+        return true
+    end
 
     -- drag state
     local drag = {
@@ -208,12 +493,17 @@ function PRT:BuildGroupsTab()
             eb:SetScript("OnMouseUp", function(self, button)
                 if button == "LeftButton" and drag.active then
                     FinishDrag()
+                elseif not drag.active then
+                    HandleModifierClick(self.slotIndex, button)
                 end
             end)
             eb:HookScript("OnTextChanged", function(self, isUserInput)
                 if isUserInput then
                     panel.dirty = true
                     panel:RefreshDuplicateWarnings()
+                    if panel.RefreshRoleIndicators then
+                        panel:RefreshRoleIndicators()
+                    end
                 end
             end)
 
@@ -226,17 +516,34 @@ function PRT:BuildGroupsTab()
             duplicateWarning:Hide()
             panel.duplicateWarnings[idx] = duplicateWarning
 
+            local rankIcon = eb:CreateTexture(nil, "OVERLAY")
+            rankIcon:SetSize(ROLE_ICON_SIZE, ROLE_ICON_SIZE)
+            rankIcon:Hide()
+            panel.rankIcons[idx] = rankIcon
+
+            local mainTankIcon = eb:CreateTexture(nil, "OVERLAY")
+            mainTankIcon:SetTexture(MAIN_TANK_ICON)
+            mainTankIcon:SetSize(ROLE_ICON_SIZE, ROLE_ICON_SIZE)
+            mainTankIcon:Hide()
+            panel.mainTankIcons[idx] = mainTankIcon
+
+            LayoutSlotIcons(panel, idx)
+
             -- Overlay Button (sits on top for drag + click-to-edit)
             local ov = W.CreateOverlayButton(panel, eb, { dragButton = "LeftButton" })
             ov.slotIndex = idx
 
             ov:SetScript("OnClick", function(self, button)
+                if HandleModifierClick(self.slotIndex, button) then
+                    return
+                end
                 if button == "LeftButton" and not drag.active then
                     self:Hide()
                     panel.slots[self.slotIndex]:SetFocus()
                 end
             end)
             ov:SetScript("OnDragStart", function(self)
+                if IsShiftDown() or IsControlDown() then return end
                 local name = PRT.Trim(panel.slots[self.slotIndex]:GetText())
                 if name ~= "" then
                     panel:StartDrag(name, self.slotIndex)
@@ -292,8 +599,98 @@ function PRT:BuildGroupsTab()
             W.AttachTooltip(ov, duplicateTooltip)
 
             panel.overlays[idx] = ov
+
+            -- SetPartyAssignment is protected. This UIParent-owned button is
+            -- only visible for an out-of-combat Ctrl-click and uses absolute
+            -- coordinates so it never protects the editable cell hierarchy.
+            local mainTankSlotIndex = idx
+            local mainTankButton = CreateFrame(
+                "Button", "PRT_RaidGroupsMainTankButton" .. idx,
+                UIParent, "SecureActionButtonTemplate")
+            mainTankButton._prtSlotIndex = idx
+            mainTankButton:SetSize(COL_W, SLOT_H)
+            -- Addon-created secure buttons otherwise inherit the player's
+            -- ActionButtonUseKeyDown CVar. This control only registers mouse-up,
+            -- so explicitly make mouse-up the protected action phase.
+            mainTankButton:SetAttribute("useOnKeyDown", ROLE_CONTROL.useOnKeyDown)
+            mainTankButton:RegisterForClicks("LeftButtonUp")
+            -- Ctrl prefixes WoW's protected attribute lookup, so use the
+            -- modifier wildcard for every part of this left-click action.
+            mainTankButton:SetAttribute("*type1", "maintank")
+            mainTankButton:SetAttribute("*action1", "toggle")
+            mainTankButton:SetAttribute("ctrl-type1", "maintank")
+            mainTankButton:SetAttribute("ctrl-action1", "toggle")
+
+            local debugTexture = mainTankButton:CreateTexture(nil, "BACKGROUND")
+            debugTexture:SetAllPoints()
+            debugTexture:SetColorTexture(0, 0.85, 1, 0.18)
+            if PRT._groupsRoleDebugEnabled then debugTexture:Show() else debugTexture:Hide() end
+            mainTankButton._prtDebugTexture = debugTexture
+
+            mainTankButton:SetScript("PreClick", function(self, button)
+                local raid = PRT.GetRaidRoster()
+                local member, identityKey = GetSlotRaidMember(mainTankSlotIndex, raid)
+                if member then
+                    local _, isMainTank = GetEffectiveRoleState(identityKey, member)
+                    self._prtPendingIdentityKey = identityKey
+                    self._prtPendingMainTank = not isMainTank
+                    local resolvedUnit = SecureButton_GetModifiedUnit
+                        and SecureButton_GetModifiedUnit(self, button)
+                        or self:GetAttribute("*unit1")
+                    local resolvedType = SecureButton_GetModifiedAttribute
+                        and SecureButton_GetModifiedAttribute(self, "type", button)
+                        or self:GetAttribute("*type1")
+                    local resolvedAction = SecureButton_GetModifiedAttribute
+                        and SecureButton_GetModifiedAttribute(self, "action", button)
+                        or self:GetAttribute("*action1")
+                    RoleDebug("secure PreClick slot=%d button=%s player=%s type=%s action=%s unit=%s exists=%s before=%s desired=%s",
+                        mainTankSlotIndex,
+                        tostring(button),
+                        tostring(member.name),
+                        tostring(resolvedType),
+                        tostring(resolvedAction),
+                        tostring(resolvedUnit),
+                        tostring(UnitExists and UnitExists(resolvedUnit) and true or false),
+                        tostring(isMainTank),
+                        tostring(not isMainTank))
+                else
+                    self._prtPendingIdentityKey = nil
+                    self._prtPendingMainTank = nil
+                    RoleDebug("secure PreClick slot=%d found no live raid member",
+                        mainTankSlotIndex)
+                end
+            end)
+            mainTankButton:SetScript("PostClick", function(self, button)
+                if self._prtPendingIdentityKey
+                    and self._prtPendingMainTank ~= nil then
+                    panel._roleDebugLastClickAt = RoleStateNow()
+                    RoleDebug("secure PostClick slot=%d button=%s action dispatched",
+                        mainTankSlotIndex, tostring(button))
+                    SetPendingRoleState(self._prtPendingIdentityKey,
+                        "isMainTank", self._prtPendingMainTank)
+                    ScheduleMainTankDebugProbes(self._prtPendingIdentityKey,
+                        self:GetAttribute("*unit1"), self._prtPendingMainTank)
+                    self:EnableMouse(false)
+                    panel:RefreshRoleIndicators()
+                end
+            end)
+            mainTankButton:EnableMouse(false)
+            if RegisterStateDriver then
+                RegisterStateDriver(mainTankButton, "visibility",
+                    ROLE_CONTROL.secureVisibility)
+            else
+                mainTankButton:Hide()
+            end
+            panel.mainTankButtons[idx] = mainTankButton
         end
     end
+
+    local roleShortcutHint = W.CreateLabel(panel, ROLE_CONTROL.shortcutHint,
+        PRT.FONT_SIZE - 2, PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3])
+    roleShortcutHint:SetPoint("TOPLEFT", panel.slots[35], "BOTTOMLEFT", 0, -2)
+    roleShortcutHint:SetWidth(COL_W * 2 + COL_GAP)
+    roleShortcutHint:SetJustifyH("LEFT")
+    panel.roleShortcutHint = roleShortcutHint
 
     ---------------------------------------------------------------------------
     -- Quick Load panel (right side)
@@ -980,6 +1377,140 @@ function PRT:BuildGroupsTab()
         if PRT.RefreshRosterMatcherPopup then PRT:RefreshRosterMatcherPopup() end
     end
 
+    function panel:DisableMainTankControls()
+        if IsInCombat() then return end
+        for _, button in ipairs(self.mainTankButtons) do
+            button:EnableMouse(false)
+        end
+    end
+
+    function panel:RefreshMainTankControls(raid)
+        if IsInCombat() then return end
+        raid = raid or PRT.GetRaidRoster()
+
+        local panelShown = IsPanelVisible()
+        local canManage = panelShown and CanManageMainTanks()
+        for i = 1, 40 do
+            local button = self.mainTankButtons[i]
+            local eb = self.slots[i]
+            local member, identityKey = GetSlotRaidMember(i, raid)
+            local pending = GetPendingRoleState(identityKey)
+            local mainTankPending = pending and pending.isMainTank ~= nil
+            local usable = button and eb and member and canManage
+                and not mainTankPending
+            if button then
+                button:SetAttribute("unit", usable and member.unit or nil)
+                button:SetAttribute("*unit1", usable and member.unit or nil)
+                button:SetAttribute("ctrl-unit1", usable and member.unit or nil)
+                button:EnableMouse(usable and true or false)
+                local debugTexture = button._prtDebugTexture
+                if debugTexture then
+                    if PRT._groupsRoleDebugEnabled and usable then
+                        debugTexture:Show()
+                    else
+                        debugTexture:Hide()
+                    end
+                end
+
+                if usable then
+                    local left = eb:GetLeft()
+                    local bottom = eb:GetBottom()
+                    if left and bottom then
+                        button:ClearAllPoints()
+                        button:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
+                        button:SetSize(eb:GetWidth() or COL_W, eb:GetHeight() or SLOT_H)
+                        if button.SetFrameStrata then
+                            -- These detached buttons must sit above the config
+                            -- window's own overlay buttons to receive Ctrl-clicks.
+                            button:SetFrameStrata("TOOLTIP")
+                        end
+                        if eb.GetFrameLevel and button.SetFrameLevel then
+                            button:SetFrameLevel(200 + i)
+                        end
+                    else
+                        button:EnableMouse(false)
+                    end
+                end
+            end
+        end
+    end
+
+    function panel:RefreshRoleIndicators(raid)
+        raid = raid or PRT.GetRaidRoster()
+        for i = 1, 40 do
+            local member, identityKey = GetSlotRaidMember(i, raid)
+            local rankIcon = self.rankIcons[i]
+            local mainTankIcon = self.mainTankIcons[i]
+            local rank, isMainTank = GetEffectiveRoleState(identityKey, member)
+
+            if rankIcon then
+                if member and rank == 2 then
+                    rankIcon:SetTexture(LEADER_ICON)
+                    rankIcon:Show()
+                elseif member and rank == 1 then
+                    rankIcon:SetTexture(ASSISTANT_ICON)
+                    rankIcon:Show()
+                else
+                    rankIcon:Hide()
+                end
+            end
+            if mainTankIcon then
+                if member and isMainTank then
+                    mainTankIcon:Show()
+                else
+                    mainTankIcon:Hide()
+                end
+            end
+            LayoutSlotIcons(self, i)
+        end
+        self:RefreshMainTankControls(raid)
+    end
+
+    function panel:SetRoleDebugVisuals(enabled)
+        self._roleDebugTrace = {}
+        for _, button in ipairs(self.mainTankButtons) do
+            local texture = button._prtDebugTexture
+            if texture then
+                if enabled then texture:Show() else texture:Hide() end
+            end
+        end
+        if not IsInCombat() and IsPanelVisible() then
+            self:RefreshMainTankControls()
+        end
+    end
+
+    function panel:DumpRoleDebug()
+        local shown, mouseEnabled, mouseOver = 0, 0, 0
+        local hoverSlots = {}
+        for i, button in ipairs(self.mainTankButtons) do
+            if button:IsShown() then shown = shown + 1 end
+            if button.IsMouseEnabled and button:IsMouseEnabled() then
+                mouseEnabled = mouseEnabled + 1
+            end
+            if button.IsMouseOver and button:IsMouseOver() then
+                mouseOver = mouseOver + 1
+                hoverSlots[#hoverSlots + 1] = tostring(i)
+            end
+        end
+        PRT.Print(("[Role debug] enabled=%s raid=%s combat=%s leader=%s assistant=%s panel=%s ctrl=%s shown=%d mouse=%d hover=%d slots=%s"):format(
+            tostring(PRT._groupsRoleDebugEnabled),
+            tostring(IsInRaid and IsInRaid() and true or false),
+            tostring(IsInCombat()),
+            tostring(UnitIsGroupLeader and UnitIsGroupLeader("player") and true or false),
+            tostring(UnitIsGroupAssistant and UnitIsGroupAssistant("player") and true or false),
+            tostring(IsPanelVisible()),
+            tostring(IsControlDown()),
+            shown, mouseEnabled, mouseOver,
+            #hoverSlots > 0 and table.concat(hoverSlots, ",") or "none"))
+        if #self._roleDebugTrace == 0 then
+            PRT.Print("[Role debug] no captured click trace")
+        else
+            for index, message in ipairs(self._roleDebugTrace) do
+                PRT.Print(("[Role debug] trace %02d %s"):format(index, message))
+            end
+        end
+    end
+
     function panel:RefreshDuplicateWarnings()
         local editorRoster = {}
         for i = 1, 40 do
@@ -996,6 +1527,7 @@ function PRT:BuildGroupsTab()
                 ClearSlotBorder(self, i)
                 if warning then warning:Hide() end
             end
+            LayoutSlotIcons(self, i)
         end
     end
 
@@ -1013,6 +1545,7 @@ function PRT:BuildGroupsTab()
 
         self:RefreshDuplicateWarnings()
         local raid = PRT.GetRaidRoster()
+        self:RefreshRoleIndicators(raid)
 
         for i = 1, 40 do
             local eb  = self.slots[i]
@@ -1139,6 +1672,46 @@ function PRT:BuildGroupsTab()
             end
         end
     end
+
+    panel:SetScript("OnHide", function(self)
+        self:DisableMainTankControls()
+    end)
+
+    local roleControlRefreshFrame = CreateFrame("Frame")
+    roleControlRefreshFrame:RegisterEvent("MODIFIER_STATE_CHANGED")
+    roleControlRefreshFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    roleControlRefreshFrame:RegisterEvent("ADDON_ACTION_BLOCKED")
+    roleControlRefreshFrame:RegisterEvent("ADDON_ACTION_FORBIDDEN")
+    roleControlRefreshFrame:RegisterEvent("UI_ERROR_MESSAGE")
+    roleControlRefreshFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+    roleControlRefreshFrame:RegisterEvent("PLAYER_ROLES_ASSIGNED")
+    roleControlRefreshFrame:SetScript("OnEvent", function(_, event, ...)
+        if event == "ADDON_ACTION_BLOCKED" or event == "ADDON_ACTION_FORBIDDEN" then
+            local addonName, functionName = ...
+            RoleDebug("%s addon=%s function=%s", event,
+                tostring(addonName), tostring(functionName))
+        elseif event == "UI_ERROR_MESSAGE" then
+            local _, message = ...
+            if panel._roleDebugLastClickAt
+                and RoleStateNow() - panel._roleDebugLastClickAt <= 4 then
+                RoleDebug("UI error after tank click: %s", tostring(message))
+            end
+        elseif event == "GROUP_ROSTER_UPDATE" or event == "PLAYER_ROLES_ASSIGNED" then
+            if panel._roleDebugLastClickAt
+                and RoleStateNow() - panel._roleDebugLastClickAt <= 4 then
+                RoleDebug("received %s after tank click", event)
+            end
+        elseif event == "PLAYER_REGEN_ENABLED" then
+            if IsPanelVisible() then
+                panel:RefreshMainTankControls()
+            else
+                panel:DisableMainTankControls()
+            end
+        elseif not IsInCombat() and IsPanelVisible() and IsControlDown() then
+            -- Recalculate absolute hit regions after window movement/resizing.
+            panel:RefreshMainTankControls()
+        end
+    end)
 
     ---------------------------------------------------------------------------
     -- Composition popups

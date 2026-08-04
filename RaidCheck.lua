@@ -2398,15 +2398,29 @@ local function MissingSummary(label, members, hasRequirement, eligible)
     return { line .. "." }
 end
 
-local function WorldBuffSummary(label, buffLabel, members, spellSet)
-    local missing = MissingMembers(members, function(member)
-        return HasWorldBuff(member, spellSet)
-    end)
-    local covered = #members - #missing
+local function WorldBuffSummary(
+        label, buffLabel, members, spellSet, distinguishBooned)
+    local covered = 0
+    local missing = {}
+    local booned = {}
+    for _, member in ipairs(members or {}) do
+        if HasWorldBuff(member, spellSet) then
+            covered = covered + 1
+        elseif distinguishBooned
+            and HasAuraSpell(member.worldBuffs, 349981) then
+            booned[#booned + 1] = member
+        else
+            missing[#missing + 1] = member
+        end
+    end
     local lines = {
         ("%s - %d/%d players have at least 1 %s."):format(
             label, covered, #members, buffLabel),
     }
+    if distinguishBooned and #booned > 0 then
+        lines[#lines + 1] = "Booned: "
+            .. table.concat(SortedNames(booned), ", ") .. "."
+    end
     if #missing > 0 then
         lines[#lines + 1] = "Missing " .. label .. ": "
             .. table.concat(SortedNames(missing), ", ") .. "."
@@ -2500,7 +2514,7 @@ local function BuildRaidCheckChatCommandBody(command, snapshot)
         end)
     elseif key == "worldBuffs" then
         return WorldBuffSummary(
-            "World Buffs", "World Buff", members, nil)
+            "World Buffs", "World Buff", members, nil, true)
     elseif key == "twoHours" then
         return WorldBuffSummary(
             "2-Hour World Buffs",

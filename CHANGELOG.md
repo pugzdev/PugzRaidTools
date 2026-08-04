@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.3.3 - 2026-08-04
+
+### Added
+
+- Added the PRT minimap artwork to the in-game AddOns list entry.
+- Added Shift+Click controls to promote or demote live raid members as assistants directly from Raid Groups cells.
+- Added Ctrl+Click controls to securely toggle the main-tank assignment for live raid members directly from Raid Groups cells.
+- Raid Groups cells now display the built-in leader, assistant, and main-tank icons, dynamically reserving space while keeping duplicate warnings furthest to the right.
+- Added a compact hint beneath the Raid Groups grid explaining the Shift+Click assistant and Ctrl+Click main-tank controls.
+- Added an opt-in **Allow marking while solo** setting to Target Marks for testing configured NPC rules outside a group.
+- Added `/prt debug target` runtime diagnostics for Target Marks attempts, outcomes, modifier transitions, and mark-confirmation timing.
+
+### Changed
+
+- World Buff chat commands now report Chronobooned players separately instead of listing them as missing World Buffs.
+- Raid-role shortcuts are unavailable during combat, and modifier-clicks no longer begin cell drags or enter text-editing mode.
+- Raid-role icons now update immediately after a shortcut while the live raid roster confirms the change.
+- Target Marks now attempts to mark the current mouseover immediately when a configured modifier is pressed, without requiring the mouseover target to change first.
+
+### Fixed
+
+- Fixed Raid Groups Ctrl+Click main-tank actions being skipped when the player's action buttons were configured to activate on key-down.
+- Fixed the **Auto Loot Method** setting sometimes failing to apply the configured loot method while still changing the loot threshold.
+- Loot settings now wait for the game to confirm the requested loot method and master looter before setting the configured threshold, preventing a delayed threshold request from restoring the previous loot method.
+- Loot-method requests rejected by the Classic API are now reported as failures instead of being treated as successfully applied.
+- When enabling Master Loot without automatic master-looter assignment, PRT preserves an existing master looter or uses the group leader when no master looter currently exists; the confirmation prompt now states this fallback clearly.
+
 ## 1.3.2 - 2026-07-30
 
 ### Added

@@ -1,8 +1,9 @@
 ## Interface: 11509
 ## Title: |cFF33FF99Pugz|rRaidTools
 ## Notes: Raid group management and auto-swap tool for WoW Classic Era
+## IconTexture: Interface\AddOns\PugzRaidTools\Media\Textures\MinimapIcon.tga
 ## Author: Pugz
-## Version: 1.3.2
+## Version: 1.3.3
 ## X-Curse-Project-ID: 1623048
 ## SavedVariables: PugzRaidToolsDB
 

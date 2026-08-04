@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.3.2"
+PRT.VERSION = "1.3.3"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -282,11 +282,17 @@ function PRT.GetRaidRoster()
     local roster = {}
     local n = GetNumGroupMembers()
     for i = 1, n do
-        local name, _, subgroup, _, _, classFile = GetRaidRosterInfo(i)
+        local name, rank, subgroup, _, _, classFile, _, _, _, role =
+            GetRaidRosterInfo(i)
         if name and subgroup then
             local baseName, realm = PRT:GetRaidMemberIdentity(i, name)
             local key = PRT:MakePlayerIdentityKey(baseName, realm)
             if key ~= "" then
+                local unit = "raid" .. i
+                local isMainTank = role == "MAINTANK"
+                if not isMainTank and GetPartyAssignment then
+                    isMainTank = GetPartyAssignment("MAINTANK", unit, true) and true or false
+                end
                 roster[key] = {
                     name = name,
                     baseName = baseName,
@@ -295,6 +301,10 @@ function PRT.GetRaidRoster()
                     classFile = classFile,
                     subgroup = subgroup,
                     index = i,
+                    unit = unit,
+                    rank = rank or 0,
+                    role = role,
+                    isMainTank = isMainTank,
                 }
             end
         end
@@ -399,6 +409,7 @@ PRT.DEFAULTS = {
     },
     targetMarks = {
         enabled = false,
+        allowSolo = false,
         activePreset = "",
         modifiers = {
             main = "CTRL",
@@ -1597,6 +1608,11 @@ end
 
 local function PRT_PrintDebugHelp()
     PRT.Print("Developer diagnostics:")
+    PRT.Print("  /prt debug target on|off - Trace live Target Marks attempts")
+    PRT.Print("  /prt debug target - Print Target Marks timing and outcomes")
+    PRT.Print("  /prt debug target clear - Clear Target Marks runtime counters")
+    PRT.Print("  /prt debug roles on|off - Trace Raid Groups role shortcuts")
+    PRT.Print("  /prt debug roles - Print the captured raid-role trace")
     PRT.Print("  /prt debugui on|off - Record config-window resize diagnostics")
     PRT.Print("  /prt debugui - Print config-window state and recent resize trace")
     PRT.Print("  /prt debugui mem on|off - Trace Target Marks allocations")
@@ -1691,6 +1707,31 @@ SlashCmdList["PRT"] = function(msg)
         if PRT.ResetMainFrameSize then PRT:ResetMainFrameSize() end
     elseif msg == "debug" or msg == "debug help" then
         PRT_PrintDebugHelp()
+    elseif msg == "debug target on" or msg == "debug marks on" then
+        if PRT.SetTargetMarksRuntimeDebug then
+            PRT:SetTargetMarksRuntimeDebug(true)
+        end
+    elseif msg == "debug target off" or msg == "debug marks off" then
+        if PRT.SetTargetMarksRuntimeDebug then
+            PRT:SetTargetMarksRuntimeDebug(false)
+        end
+    elseif msg == "debug target clear" or msg == "debug marks clear" then
+        if PRT.ResetTargetMarksRuntimeDebug then
+            PRT:ResetTargetMarksRuntimeDebug()
+        end
+    elseif msg == "debug target" or msg == "debug marks" then
+        if PRT.DumpTargetMarksRuntimeDebug then
+            PRT:DumpTargetMarksRuntimeDebug("manual")
+        end
+    elseif msg == "debug roles on" or msg == "debug role on"
+        or msg == "debug tank on" then
+        if PRT.SetGroupsRoleDebug then PRT:SetGroupsRoleDebug(true) end
+    elseif msg == "debug roles off" or msg == "debug role off"
+        or msg == "debug tank off" then
+        if PRT.SetGroupsRoleDebug then PRT:SetGroupsRoleDebug(false) end
+    elseif msg == "debug roles" or msg == "debug role"
+        or msg == "debug tank" then
+        if PRT.DumpGroupsRoleDebug then PRT:DumpGroupsRoleDebug() end
     elseif msg == "debugui match on" or msg == "debug ui match on" then
         if PRT.SetRosterMatcherMemoryDebug then
             PRT:SetRosterMatcherMemoryDebug(true)
