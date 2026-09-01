@@ -22,6 +22,16 @@ While grouped, group rearrangement and player marking require raid leader or rai
 
 ## Recent Release Highlights
 
+### 1.4.0 — Realm-Aware Raid Groups
+
+Version 1.4.0 makes casual bare-name roster imports convenient while preserving exact server identities for advanced sorting and marking workflows.
+
+*   Bare imported names can reconcile to the matching live player and save the exact `Name-Realm` identity.
+*   **Require Server Names** keeps bare identities pending until the raid leader explicitly verifies them.
+*   Same-name players from different servers use a full-name chooser, and explicit wrong-server replacements require a clear action.
+*   **Hide Server Names** shortens roster-cell display without changing saved identities, exports, Group Auto Swap, exact position sorting, or Smart Assign.
+*   Exact same-name players assigned to separate cells remain clean; warnings identify only additional unassigned namesakes.
+
 ### 1.3.3 — Raid Roles and Reliability Fixes
 
 Version 1.3.3 adds direct raid-role controls and improves server-sensitive loot, Target Marks, and Raid Check behaviour.
@@ -68,6 +78,8 @@ Build and save complete 40-player raid compositions in an eight-group roster edi
 *   Optionally force players into exact positions within each group with a slower precise sort.
 *   Quickly identify missing players and players who are not part of the selected roster.
 *   Warn when the same realm-qualified character appears in multiple roster positions.
+*   Reconcile bare imported names to live realm-qualified identities, with optional strict verification and ambiguity warnings.
+*   Optionally hide server suffixes in roster cells without changing saved or automation identities.
 *   Shift-click a live player to toggle assistant status, or Ctrl-click to toggle main-tank assignment; both shortcuts are unavailable during combat.
 *   Import multiple named compositions from a single text block.
 *   Export one roster in selectable eight-column, paired-group, single-column, or PRT format, or export every saved roster with composition headers.

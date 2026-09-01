@@ -36,9 +36,13 @@ function PRT:TryReorder()
         return
     end
 
-    local target = self:BuildTarget(comp.roster)
+    local target, targetError = self:BuildTarget(comp.roster)
     local runName = self.pendingComp
     self.pendingComp = nil
+    if not target then
+        PRT.Print(targetError)
+        return
+    end
 
     PRT.Print("Applying groups: " .. runName)
 

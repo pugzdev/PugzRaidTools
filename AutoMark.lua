@@ -352,7 +352,7 @@ function PRT:BuildAutoMarkAssignments(mg)
                 local targetName = smartComp.roster[assignment.position]
                 if targetName and targetName ~= "" then
                     assignment.sourceName = targetName
-                    assignment.identityKey = self:GetPlayerIdentityKey(targetName)
+                    assignment.identityKey = self:GetRosterSlotIdentityKey(smartComp.roster, assignment.position)
                 end
             elseif assignment.position >= 1 and assignment.position <= 40 then
                 assignment.raidPosition = assignment.position
@@ -580,7 +580,7 @@ function PRT:ApplyMarkBySmartPosition(mark, compName)
         icon = mark.icon,
         sourceName = targetName,
         position = pos,
-        identityKey = self:GetPlayerIdentityKey(targetName),
+        identityKey = self:GetRosterSlotIdentityKey(comp.roster, pos),
     }
     return self:TryAutoMarkAssignment(assignment)
 end

@@ -1386,6 +1386,11 @@ function W.AttachScrollbar(container, scroll, contentOrEdit, opts)
         slider:SetMinMaxValues(0, maxScroll)
         slider:SetValue(curScroll)
         slider._updating = false
+        -- Range updates suppress OnValueChanged, so clamp the viewport too.
+        -- Otherwise deleting rows leaves a short list stranded below the top.
+        if scroll:GetVerticalScroll() ~= curScroll then
+            scroll:SetVerticalScroll(curScroll)
+        end
     end
 
     -- Mouse wheel: delta=+1 (up) → decrease slider → scroll up

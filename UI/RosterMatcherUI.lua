@@ -234,6 +234,7 @@ end
 
 local function GetPanelRosterSnapshot(panel)
     if not panel or not panel.slots then return nil end
+    if panel.GetEditorRoster then return panel:GetEditorRoster() end
     local roster = {}
     for i = 1, 40 do
         local slot = panel.slots[i]

@@ -153,6 +153,30 @@ function PRT:BuildGroupsTab()
     panel._roleDebugTrace = {}
     panel.duplicateSlots = {}
     panel.dirty    = false
+    panel.editorRoster = PRT:CopyRealmRoster()
+    panel.realmStates = {}
+    panel.realmDismissals = {}
+    panel.realmWarningButtons = {}
+    panel.refreshGuard = W.CreateDeferredRefreshGuard()
+
+    function panel:GetEditorRoster()
+        return PRT:CopyRealmRoster(self.editorRoster)
+    end
+
+    function panel:FinishEditing()
+        for _, slot in ipairs(self.slots) do
+            if slot:HasFocus() then slot:ClearFocus() end
+        end
+    end
+
+    function panel:RenderRealmSlot(index)
+        local slot = self.slots[index]
+        if slot:HasFocus() then return end
+        local state = self.realmStates[index]
+        local value = (state and state.display) or self.editorRoster[index] or ""
+        if PRT:GetDB().settings.hideServerNames then value = PRT:SplitNameRealm(value, false) end
+        slot:SetText(value)
+    end
 
     local ShowNewCompPopup
     local ShowRenameCompPopup
@@ -175,9 +199,8 @@ function PRT:BuildGroupsTab()
     local function GetSlotRaidMember(slotIdx, raid)
         local eb = panel.slots[slotIdx]
         if not eb then return nil, "" end
-        local raw = PRT.Trim(eb:GetText())
-        local key = PRT:GetPlayerIdentityKey(raw)
-        return key ~= "" and raid[key] or nil, key
+        local key = PRT:GetRosterSlotIdentityKey(panel.editorRoster, slotIdx)
+        return key and key ~= "" and raid[key] or nil, key or ""
     end
 
     local function CanManageAssistants()
@@ -420,13 +443,18 @@ function PRT:BuildGroupsTab()
         local targetEB = self.slots[targetSlot]
         if not targetEB then self:EndDrag(); return end
 
-        local targetName = PRT.Trim(targetEB:GetText())
+        self:FinishEditing()
+        local targetName = self.editorRoster[targetSlot]
+        local latches = self.editorRoster._prtRealmAmbiguous
+        local targetLatch = latches and latches[targetSlot]
+        local sourceLatch = drag.sourceSlot and latches and latches[drag.sourceSlot]
 
         if drag.sourceSlot then
-            local sourceEB = self.slots[drag.sourceSlot]
-            if sourceEB then sourceEB:SetText(targetName) end
+            PRT:SetRealmRosterSlot(self.editorRoster, drag.sourceSlot, targetName)
+            if latches then latches[drag.sourceSlot] = targetLatch end
         end
-        targetEB:SetText(drag.sourceName)
+        PRT:SetRealmRosterSlot(self.editorRoster, targetSlot, drag.sourceName)
+        if latches then latches[targetSlot] = sourceLatch end
 
         self.dirty = true
         self:EndDrag()
@@ -477,8 +505,14 @@ function PRT:BuildGroupsTab()
             eb:SetTextInsets(6, 22, 0, 0)
             eb.slotIndex = idx
 
+            eb:SetScript("OnEditFocusGained", function(self)
+                local ov = panel.overlays[self.slotIndex]
+                if ov then ov:Hide() end
+                -- Editing always exposes the actual expected full identity,
+                -- never a cosmetic short name or an unaccepted preview.
+                self:SetText(panel.editorRoster[self.slotIndex] or "")
+            end)
             eb:SetScript("OnEditFocusLost", function(self)
-                panel.dirty = true
                 local ov = panel.overlays[self.slotIndex]
                 if ov then ov:Show() end
                 panel:RefreshHighlights()
@@ -499,6 +533,7 @@ function PRT:BuildGroupsTab()
             end)
             eb:HookScript("OnTextChanged", function(self, isUserInput)
                 if isUserInput then
+                    PRT:SetRealmRosterSlot(panel.editorRoster, self.slotIndex, self:GetText())
                     panel.dirty = true
                     panel:RefreshDuplicateWarnings()
                     if panel.RefreshRoleIndicators then
@@ -508,6 +543,7 @@ function PRT:BuildGroupsTab()
             end)
 
             panel.slots[idx] = eb
+            panel.refreshGuard:Track(eb)
 
             local duplicateWarning = eb:CreateTexture(nil, "OVERLAY")
             duplicateWarning:SetTexture("Interface\\DialogFrame\\UI-Dialog-Icon-AlertNew")
@@ -544,7 +580,7 @@ function PRT:BuildGroupsTab()
             end)
             ov:SetScript("OnDragStart", function(self)
                 if IsShiftDown() or IsControlDown() then return end
-                local name = PRT.Trim(panel.slots[self.slotIndex]:GetText())
+                local name = panel.editorRoster[self.slotIndex] or ""
                 if name ~= "" then
                     panel:StartDrag(name, self.slotIndex)
                 end
@@ -572,33 +608,31 @@ function PRT:BuildGroupsTab()
             local warningSlotIndex = idx
             local duplicateTooltip = {
                 anchor = "ANCHOR_RIGHT",
-                title = "Duplicate Character Found",
+                title = "Raid Groups: Server Names",
                 titleColor = PRT.C.YELLOW,
                 shouldShow = function()
-                    return panel.duplicateSlots[warningSlotIndex] ~= nil
+                    local state = panel.realmStates[warningSlotIndex]
+                    return state and state.kind ~= nil
                 end,
                 getLines = function()
-                    local duplicate = panel.duplicateSlots[warningSlotIndex]
-                    if not duplicate then return {} end
-
-                    local lines = {
-                        { duplicate.displayName .. " appears in multiple raid positions:", 1, 1, 1, true },
-                    }
-                    for _, duplicateSlot in ipairs(duplicate.slots) do
-                        local duplicateGroup = math.floor((duplicateSlot - 1) / 5) + 1
-                        local groupSlot = ((duplicateSlot - 1) % 5) + 1
-                        lines[#lines + 1] = {
-                            ("Group %d, Slot %d"):format(duplicateGroup, groupSlot),
-                            PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3],
-                        }
-                    end
-                    return lines
+                    return panel:GetRealmWarningLines(warningSlotIndex)
                 end,
             }
             W.AttachTooltip(eb, duplicateTooltip)
             W.AttachTooltip(ov, duplicateTooltip)
 
             panel.overlays[idx] = ov
+            local warningButton = W.CreateOverlayButton(panel, nil)
+            warningButton:SetAllPoints(duplicateWarning)
+            warningButton:SetFrameLevel(ov:GetFrameLevel() + 1)
+            warningButton:SetScript("OnClick", function(_, button)
+                if button == "LeftButton" and not IsShiftDown() and not IsControlDown() then
+                    panel:ClickRealmWarning(warningSlotIndex)
+                end
+            end)
+            W.AttachTooltip(warningButton, duplicateTooltip)
+            warningButton:Hide()
+            panel.realmWarningButtons[idx] = warningButton
 
             -- SetPartyAssignment is protected. This UIParent-owned button is
             -- only visible for an out-of-combat Ctrl-click and uses absolute
@@ -707,9 +741,51 @@ function PRT:BuildGroupsTab()
 
     local quickScroll = W.CreateScrollFrame(quickPanel, 0, 0)
     quickScroll:SetPoint("TOPLEFT",     2, -20)
-    quickScroll:SetPoint("BOTTOMRIGHT", -2, 78)
+    quickScroll:SetPoint("BOTTOMRIGHT", -2, 156)
     panel.quickScroll  = quickScroll
     panel.quickButtons = {}
+
+    local requireCB = W.CreateCheckbox(quickPanel, "Require Server Names", function(checked)
+        panel:FinishEditing()
+        PRT:GetDB().settings.requireServerNames = checked and true or false
+        panel:RefreshHighlights()
+        PRT:RefreshRealmCompositions()
+    end)
+    requireCB:SetPoint("BOTTOMLEFT", 4, 104)
+    W.AttachTooltip(requireCB.check, { title = "Require Server Names", titleColor = PRT.C.TITLE, lines = {
+        { "New names imported without a server start with their server unspecified.", 1, 1, 1, true },
+        " ",
+        { "Checked: verify each player", 1, 0.82, 0.3, true },
+        { "Click the cell's warning triangle to accept a match, including players on your own server.", 1, 1, 1, true },
+        " ",
+        { "Unchecked: accept unique matches", 0.2, 1, 0.6, true },
+        { "The first unambiguous match is accepted automatically. Multiple possible players require a choice.", 1, 1, 1, true },
+        " ",
+        { "Supplied or accepted servers always stay exact.", 1, 0.82, 0.3, true },
+        { "Keep changes ON: accepted names save automatically. OFF: click Save Changes.", 0.8, 0.8, 0.8, true },
+        { "Applies to all compositions. Existing saved rosters retain their previous meaning until edited or reimported.", 0.8, 0.8, 0.8, true },
+    } })
+    local hideCB = W.CreateCheckbox(quickPanel, "Hide Server Names", function(checked)
+        PRT:GetDB().settings.hideServerNames = checked and true or false
+        panel:RefreshHighlights()
+    end)
+    hideCB:SetPoint("BOTTOMLEFT", 4, 82)
+    W.AttachTooltip(hideCB.check, { title = "Hide Server Names", titleColor = PRT.C.TITLE, lines = {
+        { "Shortens names in Raid Groups cells only.", 1, 1, 1, true },
+        " ",
+        { "Display only - no player identities change.", 0.2, 1, 0.6, true },
+        { "Saved names and exports retain their servers. Sorting and marking still use exact players.", 1, 1, 1, true },
+        " ",
+        { "Wrong-server and duplicate-name warnings remain visible.", 1, 0.82, 0.3, true },
+        { "Click into a cell to edit its full expected name.", 0.8, 0.8, 0.8, true },
+    } })
+    panel.requireServerNames = requireCB
+    panel.hideServerNames = hideCB
+    panel.realmStatus = W.CreateLabel(quickPanel, "", PRT.FONT_SIZE - 1,
+        PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
+    panel.realmStatus:SetPoint("BOTTOMLEFT", 8, 132)
+    panel.realmStatus:SetWidth(QUICK_W - 16)
+    panel.realmStatus:SetJustifyH("LEFT")
 
     -- Row 1: New / Rename / Import (equal width, fill row)
     local _q3W = math.floor((QUICK_W - 12) / 3)
@@ -832,9 +908,14 @@ function PRT:BuildGroupsTab()
     ---------------------------------------------------------------------------
     -- Shape Import Popup  (select layout → paste → auto-detect → name popup)
     ---------------------------------------------------------------------------
-    local shapePopup = W.CreatePopupFrame("PRT_ShapeImportPopup", 520, 340, {
+    local shapePopup = W.CreatePopupFrame("PRT_ShapeImportPopup", 520, 368, {
         title = "Import Paste text below",
     })
+    local realmImportHint = W.CreateDescription(shapePopup,
+        "Name = server unspecified. Name-Server = exact player.\nRequire Server Names controls verification; cell warnings explain any conflicts.",
+        { fontSize = PRT.FONT_SIZE - 1 })
+    realmImportHint:SetPoint("BOTTOMLEFT", 14, 8)
+    realmImportHint:SetWidth(492)
 
     -- Shape buttons
     shapePopup._selectedShape = nil
@@ -900,7 +981,7 @@ function PRT:BuildGroupsTab()
             shapePopup:Hide()
 
             if #comps == 0 then
-                PRT.Print("No cooked compositions found. Expected [Name] headers followed by roster names.")
+                PRT.Print("No PRT compositions found. Expected [Name] headers followed by roster names.")
                 return
             end
 
@@ -917,7 +998,7 @@ function PRT:BuildGroupsTab()
             panel:LoadComp(firstImported)
             if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
 
-            local msg = "Imported " .. #comps .. " cooked composition" .. (#comps == 1 and "" or "s") .. "."
+            local msg = "Imported " .. #comps .. " PRT composition" .. (#comps == 1 and "" or "s") .. "."
             if renamedDuplicates then
                 msg = msg .. " Duplicate names were numbered."
             end
@@ -1208,6 +1289,7 @@ function PRT:BuildGroupsTab()
         if checked and panel.dirty and panel.selectedComp then
             panel:AutoSave()
         end
+        if checked then PRT:RefreshRealmCompositions() end
     end)
     keepCB:SetPoint("LEFT", btnSave, "RIGHT", 8, 0)
     W.AttachTooltip(keepCB.check, {
@@ -1245,10 +1327,7 @@ function PRT:BuildGroupsTab()
         if not self.dirty then return end
         local db = PRT:GetDB()
         if not db.settings.keepChanges then return end
-        local roster = {}
-        for i = 1, 40 do
-            roster[i] = PRT.Trim(self.slots[i]:GetText())
-        end
+        local roster = self:GetEditorRoster()
         PRT:UpdateCompRoster(self.selectedComp, roster)
         self.dirty = false
         if PRT.RefreshRosterMatcherPopup then PRT:RefreshRosterMatcherPopup() end
@@ -1325,15 +1404,16 @@ function PRT:BuildGroupsTab()
     panel.RefreshDropdown = function(self) self:RefreshQuickLoad() end
 
     function panel:LoadComp(name)
+        self:FinishEditing()
+        if self.realmChooser then self.realmChooser:Hide() end
         self:AutoSave()  -- save previous comp if dirty
         self.selectedComp = name
         if self.compNameLabel then
             self.compNameLabel:SetText(name or "")
         end
         local roster = SafeRoster(PRT:GetComp(name))
-        for i = 1, 40 do
-            self.slots[i]:SetText(roster[i] or "")
-        end
+        self.editorRoster = PRT:CopyRealmRoster(roster)
+        self.realmDismissals = {}
         self.dirty = false
         self:RefreshHighlights()
         self:RefreshQuickLoad()
@@ -1342,10 +1422,8 @@ function PRT:BuildGroupsTab()
 
     function panel:CommitRoster()
         if not self.selectedComp then return end
-        local roster = {}
-        for i = 1, 40 do
-            roster[i] = PRT.Trim(self.slots[i]:GetText())
-        end
+        self:FinishEditing()
+        local roster = self:GetEditorRoster()
         PRT:UpdateCompRoster(self.selectedComp, roster)
         self.dirty = false
         PRT.Print("Saved: " .. self.selectedComp)
@@ -1355,19 +1433,21 @@ function PRT:BuildGroupsTab()
 
     function panel:SnapshotCurrentRaid()
         if not IsInRaid() then PRT.Print("Not in a raid."); return end
+        self:FinishEditing()
         local groups = {}
         for g = 1, 8 do groups[g] = {} end
         local n = GetNumGroupMembers()
         for i = 1, n do
             local name, _, subgroup = GetRaidRosterInfo(i)
             if name and subgroup and subgroup >= 1 and subgroup <= 8 then
-                table.insert(groups[subgroup], name)
+                local base, realm = PRT:GetRaidMemberIdentity(i, name)
+                table.insert(groups[subgroup], PRT:MakeCharacterFullName(base, realm, true))
             end
         end
         for g = 1, 8 do
             while #groups[g] < 5 do groups[g][#groups[g] + 1] = "" end
             for s = 1, 5 do
-                self.slots[(g - 1) * 5 + s]:SetText(groups[g][s] or "")
+                PRT:SetRealmRosterSlot(self.editorRoster, (g - 1) * 5 + s, groups[g][s] or "")
             end
         end
         self.dirty = true
@@ -1511,61 +1591,186 @@ function PRT:BuildGroupsTab()
         end
     end
 
-    function panel:RefreshDuplicateWarnings()
-        local editorRoster = {}
-        for i = 1, 40 do
-            editorRoster[i] = PRT.Trim(self.slots[i]:GetText())
+    function panel:GetRealmWarningLines(index)
+        local state = self.realmStates[index]
+        if not state then return {} end
+        local lines = {}
+        local function Add(text, color)
+            color = color or PRT.C.WHITE
+            lines[#lines + 1] = { text, color[1], color[2], color[3], true }
         end
+        local amber = { 1, 0.82, 0.3 }
+        local muted = { 0.8, 0.8, 0.8 }
+        local action
+        if state.kind == "invalid" then
+            Add("This exact player is assigned more than once.", PRT.C.RED)
+            action = "Remove the extra entry. This warning cannot be dismissed."
+        elseif state.kind == "duplicate" then
+            Add("Same character name, different servers.", amber)
+            action = "If intended, click the triangle to dismiss this cell's caution. The assigned player will not change."
+        elseif state.kind == "waiting" then
+            Add("Server unspecified.", amber)
+            action = "Waiting for a matching player to join the raid."
+        elseif state.kind == "claimed" then
+            Add("Matching players are already assigned elsewhere.", amber)
+            action = "Move their existing entries or edit this cell. One player cannot fill two cells."
+        elseif state.kind == "mismatch" then
+            Add("A matching name has an unexpected server.", amber)
+            action = "Click the triangle to accept the detected player and replace the expected entry."
+        elseif state.kind == "choose" then
+            Add("A player choice is required for this name.", amber)
+            action = "Click the triangle to choose the full player name intended for this cell."
+        elseif state.kind == "verify" then
+            Add("Matching player found - server not yet accepted.", amber)
+            action = "Click the triangle to verify and accept this player."
+        end
+        Add(" ")
+        Add("Expected: " .. state.raw, amber)
+        if state.kind == "duplicate" then
+            Add("Players sharing this name:", muted)
+            for _, name in ipairs(state.duplicateNames) do Add("  " .. name) end
+        elseif state.kind ~= "invalid" then
+            for _, candidate in ipairs(state.candidates) do
+                local r, g, b = PRT.GetClassColor(candidate.info.classFile)
+                Add("In raid: " .. candidate.fullName, { r, g, b })
+            end
+        end
+        if action then
+            Add(" ")
+            Add(action, PRT.C.TITLE)
+        end
+        if state.kind == "duplicate" then
+            Add("The caution returns if these identities change or the composition is reopened.", muted)
+        elseif (state.kind == "verify" or state.kind == "mismatch" or state.kind == "choose")
+            and not PRT:GetDB().settings.keepChanges then
+            Add("Keep changes is OFF: click Save Changes after accepting.", muted)
+        end
+        return lines
+    end
 
-        self.duplicateSlots = PRT:FindDuplicateRosterSlots(editorRoster)
+    function panel:ClickRealmWarning(index)
+        self:FinishEditing()
+        self:RefreshHighlights()
+        local state = self.realmStates[index]
+        if not state then return end
+        if state.kind == "duplicate" then
+            self.realmDismissals[index] = state.signature
+            self:RefreshHighlights()
+            if GameTooltip then GameTooltip:Hide() end
+            return
+        end
+        if state.kind == "invalid" or #state.available == 0 then return end
+        local expected = self.editorRoster[index]
+        local selectedComp = self.selectedComp
+        local function Accept(key)
+            if panel.selectedComp ~= selectedComp then return end
+            local ok, message = PRT:AcceptRealmRosterCandidate(panel.editorRoster,
+                index, expected, key, IsInRaid() and PRT.GetRaidRoster() or {})
+            if ok then panel.dirty = true else PRT.Print(message) end
+            panel:RefreshHighlights()
+            if panel.realmChooser then panel.realmChooser:Hide() end
+            if GameTooltip then GameTooltip:Hide() end
+        end
+        if #state.available == 1 then
+            Accept(state.available[1].key)
+            return
+        end
+        if not self.realmChooser then
+            local chooser = W.CreatePopupFrame("PRT_RealmPlayerChooser", 360, 320,
+                { title = "Choose Player and Server" })
+            chooser.prompt = W.CreateLabel(chooser, "", PRT.FONT_SIZE)
+            chooser.prompt:SetPoint("TOPLEFT", 12, -30)
+            chooser.prompt:SetWidth(336)
+            chooser.scroll = W.CreateScrollFrame(chooser, 0, 0)
+            chooser.scroll:SetPoint("TOPLEFT", 10, -58)
+            chooser.scroll:SetPoint("BOTTOMRIGHT", -10, 42)
+            chooser.buttons = {}
+            local cancel = W.CreateButton(chooser, "Cancel", 100, 24)
+            cancel:SetPoint("BOTTOM", 0, 10)
+            cancel:SetScript("OnClick", function() chooser:Hide() end)
+            self.realmChooser = chooser
+        end
+        local chooser = self.realmChooser
+        chooser.prompt:SetText("Expected: " .. expected .. " - select the intended player:")
+        for _, button in ipairs(chooser.buttons) do button:Hide() end
+        for n, candidate in ipairs(state.available) do
+            local button = chooser.buttons[n]
+            if not button then
+                button = W.CreateButton(chooser.scroll.content, "", 320, 26)
+                chooser.buttons[n] = button
+            end
+            button:SetPoint("TOPLEFT", 0, -(n - 1) * 28)
+            button.label:SetText(candidate.fullName)
+            local r, g, b = PRT.GetClassColor(candidate.info.classFile)
+            button.label:SetTextColor(r, g, b)
+            local key = candidate.key
+            button:SetScript("OnClick", function() Accept(key) end)
+            button:Show()
+        end
+        chooser.scroll:UpdateContentHeight(#state.available * 28)
+        chooser:Show()
+    end
+
+    function panel:RefreshDuplicateWarnings(raid)
+        raid = raid or (IsInRaid() and PRT.GetRaidRoster() or {})
+        self.realmStates = PRT:GetRealmRosterStates(self.editorRoster, raid, self.realmDismissals)
+        self.duplicateSlots = {}
         for i = 1, 40 do
+            local kind = self.realmStates[i].kind
+            if kind and kind ~= "waiting" then self.duplicateSlots[i] = self.realmStates[i] end
             local warning = self.duplicateWarnings[i]
+            local button = self.realmWarningButtons[i]
             if self.duplicateSlots[i] then
                 SetSlotBorder(self, i, PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
                 if warning then warning:Show() end
+                if button then button:Show() end
             else
                 ClearSlotBorder(self, i)
                 if warning then warning:Hide() end
+                if button then button:Hide() end
             end
             LayoutSlotIcons(self, i)
         end
     end
 
     function panel:RefreshHighlights()
+        if self.refreshGuard:Defer("realm-roster", function() self:RefreshHighlights() end) then return end
+        local raid = IsInRaid() and PRT.GetRaidRoster() or {}
+        if self.selectedComp and PRT:ReconcileRealmRoster(self.editorRoster, raid,
+                PRT:GetDB().settings.requireServerNames) then
+            self.dirty = true
+        end
+        self:RefreshDuplicateWarnings(raid)
         local rosterSet    = {}
-        local rosterPretty = {}
+        local missing = {}
+        local unresolved = 0
         for i = 1, 40 do
-            local raw = PRT.Trim(self.slots[i]:GetText())
-            local k   = PRT:GetPlayerIdentityKey(raw)
-            if k ~= "" then
-                rosterSet[k]    = true
-                rosterPretty[k] = raw
-            end
+            local state = self.realmStates[i]
+            if state.key and state.key ~= "" then rosterSet[state.key] = true end
+            if state.previewKey then rosterSet[state.previewKey] = true end
+            if state.key == nil then unresolved = unresolved + 1 end
+            if state.missing then missing[#missing + 1] = state.raw end
         end
 
-        self:RefreshDuplicateWarnings()
-        local raid = PRT.GetRaidRoster()
         self:RefreshRoleIndicators(raid)
 
         for i = 1, 40 do
             local eb  = self.slots[i]
-            local raw = PRT.Trim(eb:GetText())
-            local k   = PRT:GetPlayerIdentityKey(raw)
-            if k == "" then
+            local state = self.realmStates[i]
+            self:RenderRealmSlot(i)
+            if state.raw == "" then
                 eb:SetTextColor(PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3])
-            elseif raid[k] then
-                local r, g, b = PRT.GetClassColor(raid[k].classFile)
+            elseif state.member then
+                local r, g, b = PRT.GetClassColor(state.member.classFile)
                 eb:SetTextColor(r, g, b)
+            elseif not state.missing then
+                eb:SetTextColor(PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
             else
                 eb:SetTextColor(PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3])
             end
         end
 
         -- Missing: in roster but not in raid
-        local missing = {}
-        for k, pretty in pairs(rosterPretty) do
-            if not raid[k] then missing[#missing + 1] = pretty end
-        end
         table.sort(missing)
 
         for _, lbl in ipairs(self.missButtons) do lbl:Hide() end
@@ -1594,8 +1799,8 @@ function PRT:BuildGroupsTab()
         for k, info in pairs(raid) do
             if not rosterSet[k] then
                 extra[#extra + 1] = {
-                    name      = info.name,
-                    display   = info.displayName or info.name,
+                    name      = PRT:MakeCharacterFullName(info.baseName, info.realm, true),
+                    display   = PRT:MakeCharacterFullName(info.baseName, info.realm, true),
                     group     = info.subgroup or 0,
                     classFile = info.classFile,
                 }
@@ -1654,6 +1859,11 @@ function PRT:BuildGroupsTab()
         end
 
         self.extraScroll:UpdateContentHeight(#extra * btnH + 2)
+        self:AutoSave()
+        if self.realmStatus then
+            self.realmStatus:SetText(self.dirty and "Unsaved changes - click Save Changes"
+                or (unresolved > 0 and (unresolved .. " server names unresolved") or ""))
+        end
         if PRT.RefreshRosterMatcherPopup then PRT:RefreshRosterMatcherPopup() end
     end
 
@@ -1661,6 +1871,8 @@ function PRT:BuildGroupsTab()
         local db = PRT:GetDB()
         keepCB:SetChecked(db.settings.keepChanges or false)
         forceCB:SetChecked(db.settings.forcePositions or false)
+        requireCB:SetChecked(db.settings.requireServerNames or false)
+        hideCB:SetChecked(db.settings.hideServerNames or false)
         if self.selectedComp then
             self:LoadComp(self.selectedComp)
         else
@@ -1674,6 +1886,8 @@ function PRT:BuildGroupsTab()
     end
 
     panel:SetScript("OnHide", function(self)
+        self:FinishEditing()
+        if self.realmChooser then self.realmChooser:Hide() end
         self:DisableMainTankControls()
     end)
 
@@ -1733,7 +1947,10 @@ function PRT:BuildGroupsTab()
     })
 
     local function ClearCompositionEditor()
+        panel:FinishEditing()
         panel.selectedComp = nil
+        panel.editorRoster = PRT:CopyRealmRoster()
+        panel.realmDismissals = {}
         if panel.compNameLabel then panel.compNameLabel:SetText("") end
         for i = 1, 40 do
             if panel.slots[i] then panel.slots[i]:SetText("") end

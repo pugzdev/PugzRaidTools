@@ -10,7 +10,6 @@ permissions:
   contents: write
 
 env:
-  CF_API_KEY: ${{ secrets.CF_API_KEY }}
   GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
@@ -24,3 +23,7 @@ jobs:
 
       - name: Package and publish
         uses: BigWigsMods/packager@v2
+        with:
+          # CurseForge upload is intentionally disabled pending the account-side
+          # support fix. Keep GitHub release publishing active for tagged builds.
+          args: -p 0

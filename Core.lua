@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.3.3"
+PRT.VERSION = "1.4.0"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -382,6 +382,8 @@ PRT.DEFAULTS = {
     settings = {
         mainBgAlpha      = 0.92,
         keepChanges      = false,
+        requireServerNames = false,
+        hideServerNames  = false,
         forcePositions   = false,
         frameW           = 1000,
         frameH           = 600,
@@ -667,9 +669,30 @@ function PRT:MoveComp(fromIndex, toIndex)
     return true
 end
 
--- Build target table (8 groups x 5 slots) from a flat roster array
+-- A tagged roster is a new import/editor model. Bare entries in it are NOT
+-- home-realm identities. Legacy untagged saves retain their original meaning.
+function PRT:GetRosterSlotIdentityKey(roster, index)
+    local raw = self.Trim(roster and roster[index] or "")
+    if raw == "" then return "" end
+    if roster._prtRealmVersion ~= nil then
+        local _, realm = self:SplitNameRealm(raw, false)
+        if roster._prtRealmVersion ~= 1 or realm == "" then return nil end
+    end
+    return self:GetPlayerIdentityKey(raw)
+end
+
+function PRT:GetRosterExportName(roster, index)
+    local raw = self.Trim(roster and roster[index] or "")
+    if raw == "" or roster._prtRealmVersion ~= nil then return raw end
+    local name, realm = self:SplitNameRealm(raw, true)
+    return self:MakeCharacterFullName(name, realm, true)
+end
+
+-- Build target table (8 groups x 5 slots) from a flat roster array.
+-- Fail before any engine action rather than guessing an unresolved realm.
 function PRT:BuildTarget(roster)
     local target = {}
+    local seen = {}
     for g = 1, 8 do
         target[g] = {}
         for s = 1, 5 do
@@ -680,7 +703,18 @@ function PRT:BuildTarget(roster)
         local g = math.floor((i - 1) / 5) + 1
         local s = ((i - 1) % 5) + 1
         if g >= 1 and g <= 8 then
-            target[g][s][self.RR_NAME] = self:GetPlayerIdentityKey(name)
+            local key = self:GetRosterSlotIdentityKey(roster, i)
+            if key == nil then
+                return nil, ("Resolve server names in Raid Groups and save before applying groups (Group %d, Slot %d: %s).")
+                    :format(g, s, tostring(name))
+            end
+            if roster._prtRealmVersion ~= nil and key ~= "" then
+                if seen[key] then
+                    return nil, "The same exact player appears in multiple Raid Groups cells: " .. tostring(name)
+                end
+                seen[key] = true
+            end
+            target[g][s][self.RR_NAME] = key
         end
     end
     return target
@@ -692,8 +726,8 @@ function PRT:FindDuplicateRosterSlots(roster)
 
     for slotIndex = 1, 40 do
         local raw = self.Trim(roster[slotIndex] or "")
-        local key = self:GetPlayerIdentityKey(raw)
-        if key ~= "" then
+        local key = self:GetRosterSlotIdentityKey(roster, slotIndex)
+        if key and key ~= "" then
             local entry = identities[key]
             if not entry then
                 local name, realm = self:SplitNameRealm(raw, true)
@@ -723,27 +757,13 @@ end
 ---------------------------------------------------------------------------
 -- Import / Export
 ---------------------------------------------------------------------------
-local function AppendRosterExportLines(lines, roster)
-    roster = roster or {}
-    local row = {}
-    for i, name in ipairs(roster) do
-        if name ~= "" then row[#row + 1] = name end
-        if i % 5 == 0 or i == #roster then
-            if #row > 0 then
-                lines[#lines + 1] = table.concat(row, " ")
-                row = {}
-            end
-        end
-    end
-end
-
 function PRT:ExportRosterByShape(name, roster, shape)
     roster = roster or {}
     shape = shape or "8col"
     local lines = {}
 
     local function Slot(index)
-        local value = PRT.Trim(tostring(roster[index] or ""))
+        local value = self:GetRosterExportName(roster, index)
         return value ~= "" and value or "-"
     end
 
@@ -803,8 +823,8 @@ function PRT:ExportComps(names)
             end
         end
         if include then
-            lines[#lines + 1] = "[" .. comp.name .. "]"
-            AppendRosterExportLines(lines, comp.roster)
+            -- Preserve empty slots and exact legacy identities on reimport.
+            lines[#lines + 1] = self:ExportRosterByShape(comp.name, comp.roster, "cooked")
             lines[#lines + 1] = ""
         end
     end
@@ -848,7 +868,7 @@ function PRT:ParseCookedImport(raw)
                 FinishCurrent()
                 current = {
                     name = PRT.Trim(header),
-                    roster = {},
+                    roster = { _prtRealmVersion = 1 },
                 }
                 AddRosterNames(rest or "")
             elseif current then
@@ -873,7 +893,7 @@ function PRT:ParseShapedImport(raw, shape)
         end
     end
 
-    local roster = {}
+    local roster = { _prtRealmVersion = 1 }
     for i = 1, 40 do roster[i] = "" end
 
     if shape == "8col" then
@@ -1567,6 +1587,7 @@ initFrame:SetScript("OnEvent", function(self, event, addon)
 
     PRT.Print("v" .. PRT.VERSION .. " loaded. Type /prt to open.")
 
+    if PRT.InitRosterReconciliation then PRT:InitRosterReconciliation() end
     if PRT.InitReorder then PRT:InitReorder() end
     if PRT.InitPositionSort then PRT:InitPositionSort() end
     if PRT.InitAutoSwap then PRT:InitAutoSwap() end

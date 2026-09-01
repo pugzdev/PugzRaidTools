@@ -1479,15 +1479,21 @@ function PRT:ApplyRosterMatchActions(compName, actions)
         return false, "No composition selected."
     end
 
-    local roster = {}
-    for i = 1, 40 do
-        roster[i] = comp.roster[i] or ""
+    local roster = self.CopyRealmRoster and self:CopyRealmRoster(comp.roster) or {}
+    if not self.CopyRealmRoster then
+        for i = 1, 40 do roster[i] = comp.roster[i] or "" end
     end
 
     local changed = 0
     for _, action in ipairs(actions or {}) do
         if action.slotIndex and action.liveEntry then
-            roster[action.slotIndex] = action.liveEntry.apiName or action.liveEntry.displayName
+            if roster._prtRealmVersion == 1 then
+                local live = action.liveEntry
+                self:SetRealmRosterSlot(roster, action.slotIndex,
+                    live.fullName or self:MakeCharacterFullName(live.name, live.realm, true))
+            else
+                roster[action.slotIndex] = action.liveEntry.apiName or action.liveEntry.displayName
+            end
             changed = changed + 1
             if PRT.Trim(action.aliasLabel or "") ~= "" then
                 self:SaveMatchedCharacterToAlias(action.importName or action.liveEntry.name, action.liveEntry, action.aliasLabel)

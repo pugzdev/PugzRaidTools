@@ -852,7 +852,7 @@ function PRT:BuildAutoMarkTab()
                 if comp then
                     local identityKey = PRT:GetPlayerIdentityKey(val)
                     for pos = 1, 40 do
-                        if PRT:GetPlayerIdentityKey(comp.roster[pos] or "") == identityKey then
+                        if PRT:GetRosterSlotIdentityKey(comp.roster, pos) == identityKey then
                             mg.marks[row._idx].position = pos; break
                         end
                     end
@@ -885,7 +885,9 @@ function PRT:BuildAutoMarkTab()
             if mg.smartComp ~= "" then
                 local comp = PRT:GetComp(mg.smartComp)
                 if comp and comp.roster[val] then
-                    mg.marks[row._idx].playerName = comp.roster[val]
+                    local key = PRT:GetRosterSlotIdentityKey(comp.roster, val)
+                    mg.marks[row._idx].playerName = key and key ~= ""
+                        and PRT:GetRosterExportName(comp.roster, val) or ""
                 end
             end
         end)
@@ -1417,7 +1419,9 @@ function PRT:BuildAutoMarkTab()
                 for pos = 1, 40 do
                     local n = comp.roster[pos]
                     if n and n ~= "" then
-                        posItems[#posItems + 1] = { text = pos .. " — " .. n, value = pos }
+                        local pending = PRT:GetRosterSlotIdentityKey(comp.roster, pos) == nil
+                        posItems[#posItems + 1] = { text = pos .. " — " .. n
+                            .. (pending and " (server unresolved)" or ""), value = pos }
                     end
                 end
             end
@@ -1426,8 +1430,10 @@ function PRT:BuildAutoMarkTab()
             if comp then
                 for pos = 1, 40 do
                     local n = comp.roster[pos]
-                    if n and n ~= "" then
-                        nameItems[#nameItems + 1] = { text = n, value = n }
+                    local key = PRT:GetRosterSlotIdentityKey(comp.roster, pos)
+                    if n and n ~= "" and key and key ~= "" then
+                        local exact = PRT:GetRosterExportName(comp.roster, pos)
+                        nameItems[#nameItems + 1] = { text = exact, value = exact }
                     end
                 end
             end

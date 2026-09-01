@@ -3641,12 +3641,20 @@ function PRT:RequestPositionReorder(compName)
         return
     end
 
+    local target, targetError = self:BuildTarget(comp.roster)
+    if not target then
+        self._positionSortLog.stats.status = "failed"
+        self:PositionSortLog("VALIDATION failed: %s", targetError)
+        PRT.Print(targetError)
+        return
+    end
+
     self._positionSortSequence =
         (self._positionSortSequence or 0) + 1
     local session = {
         seq = self._positionSortSequence,
         compName = compName,
-        target = self:BuildTarget(comp.roster),
+        target = target,
         stage = "starting",
         startedAt = Now(),
         groupPasses = 0,

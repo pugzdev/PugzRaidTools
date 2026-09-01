@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0 - 2026-09-01
+
+### Added
+
+- Added realm-unspecified Raid Groups imports: bare character names can reconcile to the exact live `Name-Realm` identity without weakening Group Auto Swap or Player Auto Marking.
+- Added **Require Server Names** for raid leaders who want to verify every bare imported identity before accepting it.
+- Added **Hide Server Names** as a display-only option that retains exact saved, exported, sorting, and marking identities.
+- Added full-name selection and warning actions for ambiguous same-name players and explicit wrong-server replacements.
+
+### Changed
+
+- PRT-format import feedback now calls imported rosters **PRT compositions** instead of using the old internal “cooked compositions” terminology.
+- Recognized players display their resolved full identity and class colour while warnings distinguish unresolved, ambiguous, mismatched, and unassigned same-name players.
+- Accepted identities are retained through departures and rejoins, and exported compositions preserve their full server names.
+
+### Fixed
+
+- Fixed bare cross-realm roster entries being treated as observer-realm players and incorrectly appearing missing while their actual characters appeared Not in Roster.
+- Fixed two deliberately assigned exact same-name players from different servers warning about each other; cautions now appear only for additional unassigned namesakes.
+- Fixed the Quick Load list remaining stranded at an obsolete scroll offset after enough compositions were deleted.
+- Preserved exact realm identities through fast group swaps, exact-position sorting, and Smart Assign player marking.
+
 ## 1.3.3 - 2026-08-04
 
 ### Added

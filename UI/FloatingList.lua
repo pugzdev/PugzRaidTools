@@ -125,11 +125,13 @@ local function ShowCompTooltip(btn, compName)
     if not comp then return end
 
     local rosterSet, pretty = {}, {}
-    for _, w in ipairs(comp.roster or {}) do
-        local k = PRT:GetPlayerIdentityKey(w)
-        if k ~= "" then
+    for index, w in ipairs(comp.roster or {}) do
+        local k = PRT:GetRosterSlotIdentityKey(comp.roster, index)
+        if k and k ~= "" then
             rosterSet[k] = true
             if not pretty[k] then pretty[k] = PRT.Trim(w) end
+        elseif k == nil then
+            pretty["unresolved:" .. index] = PRT.Trim(w) .. " (server unresolved)"
         end
     end
 
