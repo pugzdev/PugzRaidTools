@@ -387,37 +387,28 @@ local function BuildDesiredOrders(snapshot, target)
             end
         end
 
-        -- The raid leader cannot be moved. Normalize the attainable target
-        -- around their current position instead of silently claiming an
-        -- impossible exact layout was reached.
+        -- The game permits a raid leader to change subgroup, but always forces
+        -- them to the first occupied position of that subgroup. Membership is
+        -- handled before this phase; normalize the destination order to that
+        -- live rule instead of attempting an impossible position swap.
         local leaderKey = snapshot.leaderKey
         if leaderKey and snapshot.groupByKey[leaderKey] == group then
-            local currentLeaderPosition
             local desiredLeaderPosition
-            for position, key in ipairs(snapshot.groups[group]) do
-                if key == leaderKey then
-                    currentLeaderPosition = position
-                    break
-                end
-            end
             for position, key in ipairs(desired) do
                 if key == leaderKey then
                     desiredLeaderPosition = position
                     break
                 end
             end
-            if currentLeaderPosition
-                and desiredLeaderPosition
-                and currentLeaderPosition ~= desiredLeaderPosition then
+            if desiredLeaderPosition
+                and desiredLeaderPosition ~= 1 then
                 table.remove(desired, desiredLeaderPosition)
-                table.insert(desired,
-                    math.min(currentLeaderPosition, #desired + 1),
-                    leaderKey)
+                table.insert(desired, 1, leaderKey)
                 leaderAdjustment = {
                     key = leaderKey,
                     group = group,
                     requested = desiredLeaderPosition,
-                    retained = currentLeaderPosition,
+                    forced = 1,
                 }
             end
         end
@@ -1261,6 +1252,22 @@ function PRT:BuildPositionGroupActions(pTarget, options)
     local AL_ID1 = 2
     local AL_ID2 = 3
 
+    local targetGroupByKey = {}
+    for group = 1, 8 do
+        for slot = 1, 5 do
+            local key = pTarget[group][slot][RR_NAME]
+            if key and key ~= "" then
+                targetGroupByKey[key] = group
+            end
+        end
+    end
+
+    local function LeaderStartsLocked(key, group, rank)
+        if rank ~= 2 then return 0 end
+        local desiredGroup = targetGroupByKey[key]
+        return (not desiredGroup or desiredGroup == group) and 1 or 0
+    end
+
     local function InitRaid(pRaid)
         for group = 1, 8 do
             pRaid[group] = {}
@@ -1283,7 +1290,10 @@ function PRT:BuildPositionGroupActions(pTarget, options)
                     capturedSnapshot.groups[group] or {}) do
                     pRaid[group][slot][RR_NAME] = key
                     pRaid[group][slot][RR_START] = group
-                    pRaid[group][slot][RR_LOCKED] = 0
+                    pRaid[group][slot][RR_LOCKED] =
+                        LeaderStartsLocked(
+                            key, group,
+                            capturedSnapshot.rankByKey[key] or 0)
                     pRaid[group][slot][RR_INDEX] =
                         capturedSnapshot.indexByKey[key] or 0
                 end
@@ -1292,7 +1302,7 @@ function PRT:BuildPositionGroupActions(pTarget, options)
         end
         local counts = { 0, 0, 0, 0, 0, 0, 0, 0 }
         for raidIndex = 1, GetNumGroupMembers() do
-            local name, _, group = GetRaidRosterInfo(raidIndex)
+            local name, rank, group = GetRaidRosterInfo(raidIndex)
             if name and group and group > 0 then
                 counts[group] = counts[group] + 1
                 local slot = counts[group]
@@ -1300,7 +1310,9 @@ function PRT:BuildPositionGroupActions(pTarget, options)
                     pRaid[group][slot][RR_NAME] =
                         PRT:GetRaidMemberIdentityKey(raidIndex, name)
                     pRaid[group][slot][RR_START] = group
-                    pRaid[group][slot][RR_LOCKED] = 0
+                    pRaid[group][slot][RR_LOCKED] =
+                        LeaderStartsLocked(
+                            pRaid[group][slot][RR_NAME], group, rank)
                     pRaid[group][slot][RR_INDEX] = raidIndex
                 end
             end
@@ -1829,10 +1841,8 @@ local function BuildBeamTargetMaps(snapshot, target)
         end
     end
     local leaderKey = snapshot.leaderKey
-    if leaderKey and groupByKey[leaderKey]
-        ~= snapshot.groupByKey[leaderKey] then
-        return nil, nil,
-            "saved composition requests a different raid-leader group"
+    if leaderKey and groupByKey[leaderKey] then
+        positionByKey[leaderKey] = 1
     end
     return groupByKey, positionByKey
 end
@@ -1882,7 +1892,7 @@ local function SelectBeamPivots(
     for group = 1, 8 do
         local outgoing = 0
         for _, key in ipairs(state.groups[group] or {}) do
-            if key ~= leaderKey
+            if targetGroupByKey[key]
                 and targetGroupByKey[key] ~= group then
                 outgoing = outgoing + 1
             end
@@ -1894,8 +1904,7 @@ local function SelectBeamPivots(
     for group = 1, 8 do
         for position, key in ipairs(state.groups[group] or {}) do
             local targetGroup = targetGroupByKey[key]
-            if key ~= leaderKey and targetGroup
-                and targetGroup ~= group then
+            if targetGroup and targetGroup ~= group then
                 local pivot = {
                     key = key,
                     group = group,
@@ -2092,8 +2101,12 @@ local function GenerateUnifiedBeamCandidates(
                 local exactOccupant = exactPosition
                     and state.groups[pivot.targetGroup]
                         [exactPosition]
-                if exactOccupant
-                    and exactOccupant ~= snapshot.leaderKey
+                local exactOccupantCanMove = exactOccupant
+                    and (exactOccupant ~= snapshot.leaderKey
+                        or (targetGroupByKey[exactOccupant]
+                            and targetGroupByKey[exactOccupant]
+                                == pivot.group))
+                if exactOccupantCanMove
                     and exactOccupant ~= pivot.key then
                     partners[#partners + 1] = {
                         key = exactOccupant,
@@ -2103,9 +2116,15 @@ local function GenerateUnifiedBeamCandidates(
                 end
                 for partnerPosition, partnerKey in ipairs(
                     state.groups[pivot.targetGroup] or {}) do
-                    if partnerKey ~= snapshot.leaderKey
-                        and targetGroupByKey[partnerKey]
-                            ~= pivot.targetGroup
+                    local partnerTargetGroup =
+                        targetGroupByKey[partnerKey]
+                    local partnerCanMove =
+                        partnerKey ~= snapshot.leaderKey
+                        or (partnerTargetGroup
+                            and partnerTargetGroup
+                                ~= pivot.targetGroup)
+                    if partnerCanMove
+                        and partnerTargetGroup ~= pivot.targetGroup
                         and not includedPartner[partnerKey] then
                         partners[#partners + 1] = {
                             key = partnerKey,
@@ -3027,7 +3046,7 @@ function PRT:_PositionSortAcknowledgePosition(session, snapshot)
         self:PositionSortLog("ROSTER final\n%s",
             GroupSummary(snapshot.groups))
         local leaderNote = session.positionPlan.leaderAdjustment
-            and " (raid leader position retained)" or ""
+            and " (raid leader forced to first position)" or ""
         self:_PositionSortEndSession(
             "complete",
             ("Exact position sort complete: %s%s."):format(
@@ -3419,9 +3438,9 @@ function PRT:_PositionSortPreparePositionPlan(session)
     if plan.leaderAdjustment then
         local adjustment = plan.leaderAdjustment
         self:PositionSortLog(
-            "LEADER immovable key=%s group=%d requestedPos=%d retainedPos=%d",
+            "LEADER forced-first key=%s group=%d requestedPos=%d forcedPos=%d",
             adjustment.key, adjustment.group,
-            adjustment.requested, adjustment.retained)
+            adjustment.requested, adjustment.forced)
     end
     for waveIndex, wave in ipairs(plan.waves) do
         self:PositionSortLog(
@@ -3451,7 +3470,7 @@ function PRT:_PositionSortPreparePositionPlan(session)
     end
     if #plan.waves == 0 then
         local leaderNote = plan.leaderAdjustment
-            and "; raid leader position retained" or ""
+            and "; raid leader forced to first position" or ""
         self:_PositionSortEndSession(
             "complete",
             ("Exact position sort complete: %s (positions already correct%s).")
@@ -3641,7 +3660,9 @@ function PRT:RequestPositionReorder(compName)
         return
     end
 
-    local target, targetError = self:BuildTarget(comp.roster)
+    local target, targetError, targetReport =
+        self:CompileSortTarget(comp.roster, self.GetRaidRoster())
+    self:ReportSortTargetSkips(targetReport)
     if not target then
         self._positionSortLog.stats.status = "failed"
         self:PositionSortLog("VALIDATION failed: %s", targetError)
@@ -3664,8 +3685,12 @@ function PRT:RequestPositionReorder(compName)
     self:_PositionSortActivateEventFrame()
 
     self:PositionSortLog(
-        "VALIDATION passed rosterCount=%d",
-        GetNumGroupMembers())
+        "VALIDATION passed rosterCount=%d resolvedPresent=%d unresolved=%d missing=%d protectedLeader=%s",
+        GetNumGroupMembers(),
+        targetReport.presentResolvedCount,
+        #targetReport.unresolved,
+        #targetReport.missing,
+        tostring(targetReport.protectedLeader ~= nil))
     local startingSnapshot = self:ReadPositionRosterSnapshot()
     self:PositionSortLog("ROSTER starting\n%s",
         GroupSummary(startingSnapshot.groups))

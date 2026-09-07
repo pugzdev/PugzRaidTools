@@ -213,6 +213,7 @@ function PRT:BeginGroupSwapAutoMark(compName)
                         presetName = am.activePreset,
                         queueKey = key,
                     })
+                    self:ReportSkippedAutoMarkAssignments(application)
                     applications[#applications + 1] = application
 
                     -- Raw raid-index rules only have meaning after the reorder.
@@ -327,6 +328,7 @@ end
 
 function PRT:BuildAutoMarkAssignments(mg)
     local assignments = {}
+    local skippedAssignments = {}
     local assignmentIndexByIcon = {}
     local applyOn = mg.applyOn or "name"
     local smartComp
@@ -353,6 +355,13 @@ function PRT:BuildAutoMarkAssignments(mg)
                 if targetName and targetName ~= "" then
                     assignment.sourceName = targetName
                     assignment.identityKey = self:GetRosterSlotIdentityKey(smartComp.roster, assignment.position)
+                    if not assignment.identityKey then
+                        skippedAssignments[#skippedAssignments + 1] = {
+                            sourceName = targetName,
+                            position = assignment.position,
+                            icon = icon,
+                        }
+                    end
                 end
             elseif assignment.position >= 1 and assignment.position <= 40 then
                 assignment.raidPosition = assignment.position
@@ -374,19 +383,37 @@ function PRT:BuildAutoMarkAssignments(mg)
         end
     end
 
-    return assignments, stableTargets
+    return assignments, stableTargets, skippedAssignments
+end
+
+function PRT:ReportSkippedAutoMarkAssignments(application)
+    local skipped = application and application.skippedAssignments or {}
+    if #skipped == 0 or application.skippedAssignmentsReported then return end
+    application.skippedAssignmentsReported = true
+
+    local parts = {}
+    for _, assignment in ipairs(skipped) do
+        parts[#parts + 1] = ("%s (slot %d)"):format(
+            tostring(assignment.sourceName), assignment.position)
+    end
+    PRT.Print(("Auto Mark: skipped %d unresolved Smart Assign %s: %s.")
+        :format(#skipped,
+            #skipped == 1 and "row" or "rows",
+            table.concat(parts, ", ")))
 end
 
 function PRT:CreateAutoMarkApplication(mg, opts)
     opts = opts or {}
     self:EnsureAutoMarkRuleDefaults(mg)
-    local assignments, stableTargets = self:BuildAutoMarkAssignments(mg)
+    local assignments, stableTargets, skippedAssignments =
+        self:BuildAutoMarkAssignments(mg)
     return {
         mg = mg,
         presetName = opts.presetName,
         queueKey = opts.queueKey or tostring(mg),
         assignments = assignments,
         stableTargets = stableTargets,
+        skippedAssignments = skippedAssignments,
         cleared = false,
     }
 end
@@ -506,7 +533,12 @@ function PRT:ApplyAutoMarkApplication(application, opts)
     end
 
     if opts.rebuild then
-        application.assignments = self:BuildAutoMarkAssignments(mg)
+        application.assignments,
+            application.stableTargets,
+            application.skippedAssignments =
+                self:BuildAutoMarkAssignments(mg)
+        application.skippedAssignmentsReported = nil
+        self:ReportSkippedAutoMarkAssignments(application)
     end
 
     if opts.clear and mg.unmarkAll and not application.cleared then
@@ -528,6 +560,7 @@ end
 function PRT:ApplyMarkGroup(mg, opts)
     opts = opts or {}
     local application = self:CreateAutoMarkApplication(mg, opts)
+    self:ReportSkippedAutoMarkAssignments(application)
     self:ApplyAutoMarkApplication(application, {
         clear = true,
         queue = mg.retryUnavailable,

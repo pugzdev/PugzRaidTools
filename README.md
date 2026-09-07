@@ -22,6 +22,15 @@ While grouped, group rearrangement and player marking require raid leader or rai
 
 ## Recent Release Highlights
 
+### 1.4.1 — Best-Effort Raid Sorting
+
+Version 1.4.1 lets useful group sorting continue while a roster is still being filled or corrected.
+
+*   Present players with exact server identities are sorted normally even when other roster entries are missing or still have unresolved bare names.
+*   Missing and unresolved entries are reported in chat. Unresolved live players are unconstrained and may move as needed while known players are arranged.
+*   Fast sorting, exact-position sorting, the Floating Raid Group List, Group Auto Swap, and Smart Assign use the same exact/no-guess identity boundary.
+*   The raid leader remains protected from collateral moves, and an active Raid Groups cell edit is finalized before **Apply Groups** compiles the sort.
+
 ### 1.4.0 — Realm-Aware Raid Groups
 
 Version 1.4.0 makes casual bare-name roster imports convenient while preserving exact server identities for advanced sorting and marking workflows.

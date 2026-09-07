@@ -1269,6 +1269,10 @@ function PRT:BuildGroupsTab()
     btnApply:SetPoint("BOTTOMLEFT", 12, 6)
     btnApply:SetScript("OnClick", function()
         if panel.selectedComp then
+            -- Commit the focused edit to the editor model before Keep Changes
+            -- decides whether this Apply should update the saved composition.
+            panel:FinishEditing()
+            panel:AutoSave()
             local db = PRT:GetDB()
             PRT:RequestReorder(panel.selectedComp, db.settings.forcePositions)
         end

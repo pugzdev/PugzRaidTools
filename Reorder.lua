@@ -36,9 +36,11 @@ function PRT:TryReorder()
         return
     end
 
-    local target, targetError = self:BuildTarget(comp.roster)
+    local target, targetError, targetReport =
+        self:CompileSortTarget(comp.roster, self.GetRaidRoster())
     local runName = self.pendingComp
     self.pendingComp = nil
+    self:ReportSortTargetSkips(targetReport)
     if not target then
         PRT.Print(targetError)
         return
@@ -52,8 +54,12 @@ function PRT:TryReorder()
     end
 
     C_Timer.After(0.2, function()
-        PRT:DoReorder(target)
-        PRT:ShowNotification(runName .. " applied.")
+        local actionCount = PRT:DoReorder(target)
+        if actionCount > 0 then
+            PRT:ShowNotification(runName .. " group sort commands sent.")
+        else
+            PRT:ShowNotification(runName .. " groups already matched.")
+        end
         if PRT.FinishGroupSwapAutoMark then
             PRT:FinishGroupSwapAutoMark(autoMarkApplications)
         elseif PRT.OnGroupSwapForAutoMark then
@@ -94,6 +100,16 @@ function PRT:DoReorder(pTarget)
     local AL_ID1  = 2
     local AL_ID2  = 3
 
+    local targetGroupByKey = {}
+    for group = 1, 8 do
+        for slot = 1, 5 do
+            local key = pTarget[group][slot][RR_NAME]
+            if key and key ~= "" then
+                targetGroupByKey[key] = group
+            end
+        end
+    end
+
     -- helpers ---------------------------------------------------------------
     local function InitRaid(pRaid)
         for g = 1, 8 do
@@ -114,14 +130,22 @@ function PRT:DoReorder(pTarget)
         local n = GetNumGroupMembers()
         local counts = { 0, 0, 0, 0, 0, 0, 0, 0 }
         for idx = 1, n do
-            local name, _, grp = GetRaidRosterInfo(idx)
+            local name, rank, grp = GetRaidRosterInfo(idx)
             if name and grp and grp > 0 then
                 counts[grp] = counts[grp] + 1
                 local slot = counts[grp]
                 if slot <= 5 then
                     pRaid[grp][slot][RR_NAME]   = PRT:GetRaidMemberIdentityKey(idx, name)
                     pRaid[grp][slot][RR_START]  = grp
-                    pRaid[grp][slot][RR_LOCKED] = 0
+                    local key = pRaid[grp][slot][RR_NAME]
+                    local leaderTargetGroup = targetGroupByKey[key]
+                    -- A targeted leader may change subgroup. An omitted leader,
+                    -- or one already in the requested subgroup, stays locked so
+                    -- the planner cannot use them as unrelated collateral.
+                    pRaid[grp][slot][RR_LOCKED] = rank == 2
+                        and (not leaderTargetGroup
+                            or leaderTargetGroup == grp)
+                        and 1 or 0
                     pRaid[grp][slot][RR_INDEX]  = idx
                 end
             end
@@ -280,4 +304,5 @@ function PRT:DoReorder(pTarget)
     end
 
     ExecuteActions()
+    return #pActionList
 end

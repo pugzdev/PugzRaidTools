@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.4.1 - 2026-09-07
+
+### Changed
+
+- Raid Group sorting now applies every present, realm-resolved player even when the composition also contains missing players or unresolved bare names.
+- Fast sorts, exact-position sorts, Floating List actions, and Group Auto Swap share the same partial-sort rules and report skipped unresolved or missing entries in chat.
+- Smart Assign continues marking exact resolved rows while reporting unresolved rows that were skipped.
+
+### Fixed
+
+- Unresolved server names no longer prevent otherwise useful group sorting; their live players remain unconstrained and may move as collateral while resolved players are arranged.
+- Missing exact players remain non-blocking and are never replaced by a guessed identity.
+- An explicitly targeted raid leader can move between groups and is normalized to the first occupied position required by the game; an omitted leader remains protected from collateral movement.
+- Partial sorts reject the impossible case where an omitted leader's current group is assigned five other present players.
+- Clicking **Apply Groups** now finishes the active cell edit first, so **Keep changes** applies the visible edit before the sort target is compiled.
+
 ## 1.4.0 - 2026-09-01
 
 ### Added

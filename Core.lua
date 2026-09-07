@@ -5,7 +5,7 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.4.0"
+PRT.VERSION = "1.4.1"
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -718,6 +718,171 @@ function PRT:BuildTarget(roster)
         end
     end
     return target
+end
+
+-- Build a run-only target from the exact identities that are present now.
+-- Unresolved and absent entries remain unchanged in the saved composition;
+-- they simply do not constrain this sort attempt.
+function PRT:CompileSortTarget(roster, raid)
+    roster = roster or {}
+    raid = raid or self.GetRaidRoster()
+
+    local report = {
+        unresolved = {},
+        missing = {},
+        presentResolvedCount = 0,
+        protectedLeader = nil,
+    }
+    if roster._prtRealmVersion ~= nil
+        and roster._prtRealmVersion ~= 1 then
+        return nil, "This Raid Groups composition uses unsupported server-name data. Reimport or resave it before sorting.", report
+    end
+
+    local target = {}
+    for group = 1, 8 do
+        target[group] = {}
+        for slot = 1, 5 do
+            target[group][slot] = { [self.RR_NAME] = "" }
+        end
+    end
+
+    local seen = {}
+    local targetGroupByKey = {}
+    for index = 1, 40 do
+        local raw = self.Trim(roster[index] or "")
+        if raw ~= "" then
+            local group = math.floor((index - 1) / 5) + 1
+            local slot = ((index - 1) % 5) + 1
+            local key = self:GetRosterSlotIdentityKey(roster, index)
+            if key == nil then
+                report.unresolved[#report.unresolved + 1] = {
+                    raw = raw,
+                    group = group,
+                    slot = slot,
+                }
+            else
+                if roster._prtRealmVersion ~= nil and seen[key] then
+                    return nil,
+                        "The same exact player appears in multiple Raid Groups cells: " .. raw,
+                        report
+                end
+                seen[key] = true
+
+                local member = raid[key]
+                if member then
+                    target[group][slot][self.RR_NAME] = key
+                    targetGroupByKey[key] = group
+                    report.presentResolvedCount =
+                        report.presentResolvedCount + 1
+                else
+                    report.missing[#report.missing + 1] = {
+                        raw = raw,
+                        key = key,
+                        group = group,
+                        slot = slot,
+                    }
+                end
+            end
+        end
+    end
+
+    if report.presentResolvedCount == 0 then
+        return nil,
+            "No resolved players from this composition are currently in the raid, so there is nothing to sort.",
+            report
+    end
+
+    -- A raid leader can be assigned to another subgroup, but the game forces
+    -- them to the first occupied position in that subgroup. If the composition
+    -- explicitly targets the leader, preserve that requested subgroup and let
+    -- the engines move them. If the leader is omitted or unresolved, keep them
+    -- in their current subgroup so partial sorting cannot move them as
+    -- unintended collateral.
+    local leaderKey, leader
+    for key, member in pairs(raid) do
+        if member.rank == 2 then
+            leaderKey, leader = key, member
+            break
+        end
+        if member.index == 1 and not leader then
+            leaderKey, leader = key, member
+        end
+    end
+    if leaderKey and leader and leader.subgroup then
+        local desiredGroup = targetGroupByKey[leaderKey]
+        local leaderName = self:MakeCharacterFullName(
+            leader.baseName or leader.name,
+            leader.realm or "",
+            true)
+        if not desiredGroup then
+            local preferredSlot = 1
+            for _, member in pairs(raid) do
+                if member.subgroup == leader.subgroup
+                    and member.index < leader.index then
+                    preferredSlot = preferredSlot + 1
+                end
+            end
+            local protectedSlot
+            if preferredSlot <= 5
+                and target[leader.subgroup][preferredSlot][self.RR_NAME] == "" then
+                protectedSlot = preferredSlot
+            else
+                for slot = 1, 5 do
+                    if target[leader.subgroup][slot][self.RR_NAME] == "" then
+                        protectedSlot = slot
+                        break
+                    end
+                end
+            end
+            if not protectedSlot then
+                return nil,
+                    ("Cannot sort this composition because Group %d assigns five other present players while raid leader %s must remain in that group.")
+                        :format(leader.subgroup, leaderName),
+                    report
+            end
+            target[leader.subgroup][protectedSlot][self.RR_NAME] = leaderKey
+            report.protectedLeader = {
+                key = leaderKey,
+                group = leader.subgroup,
+                slot = protectedSlot,
+            }
+        end
+    end
+
+    return target, nil, report
+end
+
+function PRT:ReportSortTargetSkips(report)
+    if not report then return end
+
+    local function PrintEntries(label, entries)
+        local parts = {}
+        for _, entry in ipairs(entries) do
+            parts[#parts + 1] = ("%s (G%d S%d)"):format(
+                tostring(entry.raw), entry.group, entry.slot)
+        end
+        for first = 1, #parts, 5 do
+            local last = math.min(first + 4, #parts)
+            local chunk = {}
+            for index = first, last do
+                chunk[#chunk + 1] = parts[index]
+            end
+            PRT.Print(label .. " " .. table.concat(chunk, ", "))
+        end
+    end
+
+    if #report.unresolved > 0 then
+        PRT.Print(("Partial sort: skipping %d unresolved roster %s. Unresolved raid members may move as needed.")
+            :format(#report.unresolved,
+                #report.unresolved == 1 and "name" or "names"))
+        PrintEntries("Unresolved:", report.unresolved)
+    end
+    if #report.missing > 0 then
+        PRT.Print(("Partial sort: %d resolved roster %s missing from the raid. Remaining present players will still be sorted.")
+            :format(#report.missing,
+                #report.missing == 1 and "player is" or "players are"))
+        PrintEntries("Missing:", report.missing)
+    end
 end
 
 function PRT:FindDuplicateRosterSlots(roster)
