@@ -1821,10 +1821,72 @@ function PRT:BuildRaidCheckTestSnapshot()
     }
 end
 
-local function NamesMissing(snapshot, predicate)
+local function BuildRaidCheckNameContext(snapshot)
+    local duplicateBases = {}
+    for _, member in ipairs(snapshot and snapshot.members or {}) do
+        local baseName = tostring(member.name or "")
+        if baseName == "" then
+            baseName = PRT:SplitNameRealm(member.displayName or "", false)
+        end
+        local key = string.lower(baseName)
+        if key ~= "" then
+            duplicateBases[key] = (duplicateBases[key] or 0) + 1
+        end
+    end
+
+    local cfg = PRT:GetDB().raidCheck or {}
+    return {
+        duplicateBases = duplicateBases,
+        abbreviate = cfg.abbreviatePlayerLists == true,
+        threshold = math.max(1, math.min(40,
+            math.floor(tonumber(cfg.playerListThreshold) or 10))),
+    }
+end
+
+local function MemberDisplayName(member, context)
+    member = member or {}
+    local baseName = tostring(member.name or "")
+    if baseName == "" then
+        baseName = PRT:SplitNameRealm(member.displayName or "", false)
+    end
+    if baseName == "" then baseName = "Unknown" end
+    local duplicated = context and context.duplicateBases
+        and (context.duplicateBases[string.lower(baseName)] or 0) > 1
+    if duplicated then
+        local fullName = PRT:MakeCharacterFullName(
+            baseName, member.realm or "", true)
+        if fullName ~= baseName then return fullName end
+        return tostring(member.displayName or baseName)
+    end
+    return baseName
+end
+
+local function AbbreviateNameList(names, context)
+    if not context or not context.abbreviate
+        or #names <= context.threshold then return names end
+    local result = {}
+    for index = 1, context.threshold do
+        result[index] = names[index]
+    end
+    result[#result + 1] = ("and %d more"):format(#names - context.threshold)
+    return result
+end
+
+local function FormatRaidCheckNameString(name, context)
+    local baseName, realm = PRT:SplitNameRealm(tostring(name or ""), false)
+    return MemberDisplayName({
+        name = baseName,
+        realm = realm,
+        displayName = PRT:MakeCharacterFullName(baseName, realm, false),
+    }, context)
+end
+
+local function NamesMissing(snapshot, predicate, context)
     local names = {}
     for _, member in ipairs(snapshot.members) do
-        if predicate(member) then names[#names + 1] = member.displayName end
+        if predicate(member) then
+            names[#names + 1] = MemberDisplayName(member, context)
+        end
     end
     table.sort(names, function(a, b)
         return string.lower(a) < string.lower(b)
@@ -1832,7 +1894,7 @@ local function NamesMissing(snapshot, predicate)
     return names
 end
 
-local function AppendNameLines(lines, missingLabel, coveredLabel, names, total)
+local function AppendNameLines(lines, missingLabel, coveredLabel, names, total, context)
     if #names == 0 then
         lines[#lines + 1] = ("%s: all %d players covered."):format(
             coveredLabel, total)
@@ -1840,6 +1902,7 @@ local function AppendNameLines(lines, missingLabel, coveredLabel, names, total)
     end
 
     local prefix = ("%s (%d): "):format(missingLabel, #names)
+    names = AbbreviateNameList(names, context)
     local current = prefix
     for index, name in ipairs(names) do
         local suffix = index < #names and ", " or ""
@@ -1852,12 +1915,13 @@ local function AppendNameLines(lines, missingLabel, coveredLabel, names, total)
     lines[#lines + 1] = current:gsub(", $", "")
 end
 
-local function AppendFoundLines(lines, label, names)
+local function AppendFoundLines(lines, label, names, context)
     if #names == 0 then
         lines[#lines + 1] = label .. ": none detected."
         return
     end
     local prefix = ("%s (%d): "):format(label, #names)
+    names = AbbreviateNameList(names, context)
     local current = prefix
     for index, name in ipairs(names) do
         local suffix = index < #names and ", " or ""
@@ -1921,6 +1985,7 @@ end
 
 function PRT:BuildRaidCheckReport(checkType, snapshot)
     snapshot = snapshot or self:BuildRaidCheckSnapshot()
+    local nameContext = BuildRaidCheckNameContext(snapshot)
     local lines = {}
     if #snapshot.members == 0 then
         return { "Raid Check: no group members found." }, snapshot
@@ -1938,51 +2003,53 @@ function PRT:BuildRaidCheckReport(checkType, snapshot)
             NamesMissing(snapshot, function(member)
                 return not member.countedWorldBuffs
                     or #member.countedWorldBuffs == 0
-            end),
-            #snapshot.members)
+            end, nameContext),
+            #snapshot.members, nameContext)
     end
     if checkType == "food" or (checkType == "all" and Enabled("food")) then
         AppendNameLines(lines, "Missing food", "Food",
-            NamesMissing(snapshot, function(member) return not member.food end),
-            #snapshot.members)
+            NamesMissing(snapshot, function(member) return not member.food end,
+                nameContext),
+            #snapshot.members, nameContext)
     end
     if checkType == "flask"
         or (checkType == "all" and Enabled("flask")) then
         AppendNameLines(lines, "Missing flask", "Flask",
-            NamesMissing(snapshot, function(member) return not member.flask end),
-            #snapshot.members)
+            NamesMissing(snapshot, function(member) return not member.flask end,
+                nameContext),
+            #snapshot.members, nameContext)
     end
     if checkType == "zanza"
         or (checkType == "all" and Enabled("zanza")) then
         AppendNameLines(lines, "Missing Zanza", "Zanza",
             NamesMissing(snapshot, function(member)
                 return not member.zanza or #member.zanza == 0
-            end),
-            #snapshot.members)
+            end, nameContext),
+            #snapshot.members, nameContext)
     end
     if checkType == "consumes" or checkType == "potion"
         or (checkType == "all" and Enabled("consumes")) then
         AppendNameLines(lines, "Missing consumes", "Consumes",
             NamesMissing(snapshot, function(member)
                 return not member.consumes or #member.consumes == 0
-            end),
-            #snapshot.members)
+            end, nameContext),
+            #snapshot.members, nameContext)
     end
     if checkType == "potions"
         or (checkType == "all" and Enabled("potions")) then
         AppendNameLines(lines, "Missing potions", "Potions",
             NamesMissing(snapshot, function(member)
                 return not member.potions or #member.potions == 0
-            end),
-            #snapshot.members)
+            end, nameContext),
+            #snapshot.members, nameContext)
     end
     if checkType == "disallowed"
         or (checkType == "all" and Enabled("disallowed")) then
         local found = NamesMissing(snapshot, function(member)
             return member.disallowed and #member.disallowed > 0
-        end)
+        end, nameContext)
         if checkType == "disallowed" or #found > 0 then
-            AppendFoundLines(lines, "Disallowed buffs found", found)
+            AppendFoundLines(lines, "Disallowed buffs found", found, nameContext)
         end
     end
     local anyBuffColumnEnabled = false
@@ -2328,10 +2395,6 @@ function PRT:PrintRaidCheckChatCommands()
     end
 end
 
-local function MemberDisplayName(member)
-    return tostring(member.displayName or member.name or "Unknown")
-end
-
 local function EligibleMembers(snapshot, classes)
     local members = {}
     for _, member in ipairs(snapshot.members or {}) do
@@ -2342,15 +2405,20 @@ local function EligibleMembers(snapshot, classes)
     return members
 end
 
-local function SortedNames(members)
+local function SortedNames(members, context)
     local names = {}
     for _, member in ipairs(members or {}) do
-        names[#names + 1] = MemberDisplayName(member)
+        names[#names + 1] = MemberDisplayName(member, context)
     end
     table.sort(names, function(left, right)
         return string.lower(left) < string.lower(right)
     end)
     return names
+end
+
+local function JoinedNames(members, context)
+    return table.concat(AbbreviateNameList(
+        SortedNames(members, context), context), ", ")
 end
 
 local function MissingMembers(members, hasRequirement)
@@ -2386,20 +2454,20 @@ local function HasMaxRankBuff(member, buffKey)
     return aura ~= nil and aura.raidCheckLowRank ~= true
 end
 
-local function MissingSummary(label, members, hasRequirement, eligible)
+local function MissingSummary(label, members, hasRequirement, eligible, context)
     local missing = MissingMembers(members, hasRequirement)
     local scope = eligible
         and "eligible players missing" or "players missing"
     local line = ("%s - %d/%d %s"):format(
         label, #missing, #members, scope)
     if #missing > 0 then
-        line = line .. " - " .. table.concat(SortedNames(missing), ", ")
+        line = line .. " - " .. JoinedNames(missing, context)
     end
     return { line .. "." }
 end
 
 local function WorldBuffSummary(
-        label, buffLabel, members, spellSet, distinguishBooned)
+        label, buffLabel, members, spellSet, distinguishBooned, context)
     local covered = 0
     local missing = {}
     local booned = {}
@@ -2419,11 +2487,11 @@ local function WorldBuffSummary(
     }
     if distinguishBooned and #booned > 0 then
         lines[#lines + 1] = "Booned: "
-            .. table.concat(SortedNames(booned), ", ") .. "."
+            .. JoinedNames(booned, context) .. "."
     end
     if #missing > 0 then
         lines[#lines + 1] = "Missing " .. label .. ": "
-            .. table.concat(SortedNames(missing), ", ") .. "."
+            .. JoinedNames(missing, context) .. "."
     end
     return lines
 end
@@ -2463,7 +2531,7 @@ local function DurabilitySummary(snapshot)
     return lines
 end
 
-local function DisallowedSummary(members)
+local function DisallowedSummary(members, context)
     local affected = {}
     local foundBySpell = {}
     local detections = 0
@@ -2497,7 +2565,7 @@ local function DisallowedSummary(members)
         local found = foundBySpell[definition.spellId]
         if found and #found > 0 then
             lines[#lines + 1] = definition.name .. " - "
-                .. table.concat(SortedNames(found), ", ") .. "."
+                .. JoinedNames(found, context) .. "."
         end
     end
     return lines
@@ -2505,28 +2573,33 @@ end
 
 local function BuildRaidCheckChatCommandBody(command, snapshot)
     local members = snapshot.members or {}
+    local nameContext = BuildRaidCheckNameContext(snapshot)
     if #members == 0 then return { "No group members found." } end
     local key = command.key
 
     if key == "flask" then
         return MissingSummary("Flasks", members, function(member)
             return member.flask ~= nil
-        end)
+        end, false, nameContext)
     elseif key == "worldBuffs" then
         return WorldBuffSummary(
-            "World Buffs", "World Buff", members, nil, true)
+            "World Buffs", "World Buff", members, nil, true, nameContext)
     elseif key == "twoHours" then
         return WorldBuffSummary(
             "2-Hour World Buffs",
             "2-hour World Buff",
             members,
-            TWO_HOUR_WORLD_BUFFS)
+            TWO_HOUR_WORLD_BUFFS,
+            false,
+            nameContext)
     elseif key == "oneHours" then
         return WorldBuffSummary(
             "1-Hour World Buffs",
             "1-hour World Buff",
             members,
-            ONE_HOUR_WORLD_BUFFS)
+            ONE_HOUR_WORLD_BUFFS,
+            false,
+            nameContext)
     elseif key == "boon" then
         local covered = 0
         for _, member in ipairs(members) do
@@ -2539,7 +2612,7 @@ local function BuildRaidCheckChatCommandBody(command, snapshot)
                 .. "Displacer active."):format(covered, #members),
         }
     elseif key == "disallowed" then
-        return DisallowedSummary(members)
+        return DisallowedSummary(members, nameContext)
     elseif key == "battleShout" then
         local eligible = EligibleMembers(snapshot, BATTLE_SHOUT_CLASSES)
         local covered = 0
@@ -2565,7 +2638,8 @@ local function BuildRaidCheckChatCommandBody(command, snapshot)
             function(member)
                 return HasMaxRankBuff(member, buffCommand.buffKey)
             end,
-            buffCommand.classes ~= nil)
+            buffCommand.classes ~= nil,
+            nameContext)
     end
 
     local auraCommand = AURA_CHAT_COMMANDS[key]
@@ -2577,7 +2651,9 @@ local function BuildRaidCheckChatCommandBody(command, snapshot)
                 return HasAuraSpell(
                     member[auraCommand.memberKey],
                     auraCommand.spellId)
-            end)
+            end,
+            false,
+            nameContext)
     end
     return {}
 end
@@ -2623,8 +2699,8 @@ local function MembersMatching(members, predicate)
     return result
 end
 
-local function NameListLine(label, members)
-    local names = SortedNames(members)
+local function NameListLine(label, members, context)
+    local names = AbbreviateNameList(SortedNames(members, context), context)
     return label .. ": "
         .. (#names > 0 and table.concat(names, ", ") or "None")
         .. "."
@@ -2670,8 +2746,8 @@ local function AuraReportName(aura, fallback)
             or "buff")
 end
 
-local function WrongRankEntry(member, aura, fallback)
-    local text = MemberDisplayName(member)
+local function WrongRankEntry(member, aura, fallback, context)
+    local text = MemberDisplayName(member, context)
         .. " (" .. AuraReportName(aura, fallback)
     if aura and aura.raidCheckRank and aura.raidCheckMaxRank then
         text = text .. (" R%d/%d"):format(
@@ -2681,19 +2757,20 @@ local function WrongRankEntry(member, aura, fallback)
     end
     if aura and aura.raidCheckSourceName
         and aura.raidCheckSourceName ~= "" then
-        text = text .. ", by " .. aura.raidCheckSourceName
+        text = text .. ", by "
+            .. FormatRaidCheckNameString(aura.raidCheckSourceName, context)
     end
     return text .. ")"
 end
 
-local function BuffClickSummary(snapshot, buffKey, report)
+local function BuffClickSummary(snapshot, buffKey, report, context)
     local eligible = EligibleMembers(snapshot, report.classes)
     local correct, wrong, missing = 0, {}, {}
     for _, member in ipairs(eligible) do
         local aura = member.buffs and member.buffs[buffKey]
         if aura and aura.raidCheckLowRank then
             wrong[#wrong + 1] = WrongRankEntry(
-                member, aura, report.label)
+                member, aura, report.label, context)
         elseif aura then
             correct = correct + 1
         else
@@ -2707,20 +2784,21 @@ local function BuffClickSummary(snapshot, buffKey, report)
     }
     if #wrong > 0 then
         lines[#lines + 1] = "Wrong Rank " .. report.label
-            .. ": " .. table.concat(wrong, ", ") .. "."
+            .. ": " .. table.concat(
+                AbbreviateNameList(wrong, context), ", ") .. "."
     end
     lines[#lines + 1] = NameListLine(
-        "Missing " .. report.label, missing)
+        "Missing " .. report.label, missing, context)
     return lines
 end
 
 local function PlayerBuffClickSummary(
-        snapshot, member, buffKey, report)
+        snapshot, member, buffKey, report, context)
     if report.classes and not report.classes[member.classFile] then
         return {
             ("%s - %s - Group %d, Slot %d - %s is not required "
                 .. "for this class."):format(
-                MemberDisplayName(member),
+                MemberDisplayName(member, context),
                 MemberClassLabel(member),
                 tonumber(member.subgroup) or 1,
                 MemberGroupSlot(snapshot, member),
@@ -2728,7 +2806,7 @@ local function PlayerBuffClickSummary(
         }
     end
 
-    local playerName = MemberDisplayName(member)
+    local playerName = MemberDisplayName(member, context)
     local subgroup = tonumber(member.subgroup) or 1
     local groupSlot = MemberGroupSlot(snapshot, member)
     local location = ("%s - %s - Group %d, Slot %d"):format(
@@ -2752,7 +2830,8 @@ local function PlayerBuffClickSummary(
         if aura.raidCheckSourceName
             and aura.raidCheckSourceName ~= "" then
             status = status .. ", buffed by "
-                .. aura.raidCheckSourceName
+                .. FormatRaidCheckNameString(
+                    aura.raidCheckSourceName, context)
         end
         lines[#lines + 1] = location .. " - " .. status .. "."
     else
@@ -2764,7 +2843,7 @@ local function PlayerBuffClickSummary(
     return lines
 end
 
-local function ReadyClickSummary(members)
+local function ReadyClickSummary(members, context)
     local ready = MembersMatching(members, function(member)
         return member.readyStatus == "ready"
     end)
@@ -2778,12 +2857,12 @@ local function ReadyClickSummary(members)
     return {
         ("Ready Check - %d/%d players Ready."):format(
             #ready, #members),
-        NameListLine("Not Ready", notReady),
-        NameListLine("Awaiting Response", awaiting),
+        NameListLine("Not Ready", notReady, context),
+        NameListLine("Awaiting Response", awaiting, context),
     }
 end
 
-local function WorldBuffClickSummary(members, oneHourOnly)
+local function WorldBuffClickSummary(members, oneHourOnly, context)
     if oneHourOnly then
         local covered = MembersMatching(members, function(member)
             return HasWorldBuff(member, ONE_HOUR_WORLD_BUFFS)
@@ -2808,18 +2887,18 @@ local function WorldBuffClickSummary(members, oneHourOnly)
     return {
         ("World Buffs - %d/%d players have at least 1 World Buff."):format(
             #active, #members),
-        NameListLine("Booned", booned),
-        NameListLine("No World Buffs", empty),
+        NameListLine("Booned", booned, context),
+        NameListLine("No World Buffs", empty, context),
     }
 end
 
-local function BattleShoutClickSummary(members, listPlayers)
+local function BattleShoutClickSummary(members, listPlayers, context)
     local found = MembersMatching(members, function(member)
         return HasMaxRankBuff(member, "attackPower")
     end)
     if listPlayers then
         return {
-            NameListLine("Players with Battle Shout", found),
+            NameListLine("Players with Battle Shout", found, context),
         }
     end
     return {
@@ -2828,7 +2907,7 @@ local function BattleShoutClickSummary(members, listPlayers)
     }
 end
 
-local function DisallowedClickSummary(members)
+local function DisallowedClickSummary(members, context)
     local affected = {}
     local foundBySpell = {}
     for _, member in ipairs(members) do
@@ -2854,7 +2933,7 @@ local function DisallowedClickSummary(members)
         local found = foundBySpell[definition.spellId]
         if found and #found > 0 then
             lines[#lines + 1] = definition.name .. " - "
-                .. table.concat(SortedNames(found), ", ") .. "."
+                .. JoinedNames(found, context) .. "."
         end
     end
     if #affected == 0 then
@@ -2865,17 +2944,17 @@ local function DisallowedClickSummary(members)
 end
 
 local function PresenceClickSummary(
-        label, members, hasRequirement, missingLabel, coveredText)
+        label, members, hasRequirement, missingLabel, coveredText, context)
     local found = MembersMatching(members, hasRequirement)
     local missing = MissingMembers(members, hasRequirement)
     return {
         ("%s - %d/%d players %s."):format(
             label, #found, #members, coveredText or "covered"),
-        NameListLine(missingLabel or ("Missing " .. label), missing),
+        NameListLine(missingLabel or ("Missing " .. label), missing, context),
     }
 end
 
-local function PotionClickSummary(members, spellId)
+local function PotionClickSummary(members, spellId, context)
     spellId = tonumber(spellId)
     local definition = POTION_AURAS[spellId]
     if not definition then return nil end
@@ -2886,10 +2965,11 @@ local function PotionClickSummary(members, spellId)
             return HasAuraSpell(member.potions, spellId)
         end,
         "Missing " .. definition.name,
-        "have " .. definition.name)
+        "have " .. definition.name,
+        context)
 end
 
-local function ConsumesClickSummary(members)
+local function ConsumesClickSummary(members, context)
     local atLeastTwo = MembersMatching(members, function(member)
         return #(member.consumes or {}) >= 2
     end)
@@ -2903,7 +2983,7 @@ local function ConsumesClickSummary(members)
         ("Consumes - %d/%d players have at least 2; %d/%d have "
             .. "at least 1."):format(
                 #atLeastTwo, #members, #atLeastOne, #members),
-        NameListLine("No Consumes", none),
+        NameListLine("No Consumes", none, context),
     }
 end
 
@@ -2911,6 +2991,7 @@ function PRT:BuildRaidCheckClickReport(columnKey, snapshot, options)
     snapshot = snapshot or self:BuildRaidCheckSnapshot()
     options = options or {}
     local members = snapshot.members or {}
+    local nameContext = BuildRaidCheckNameContext(snapshot)
     if #members == 0 then
         return PrefixAndSplitChatLines(
             { "No group members found." },
@@ -2920,22 +3001,23 @@ function PRT:BuildRaidCheckClickReport(columnKey, snapshot, options)
 
     local lines
     if columnKey == "player" then
-        lines = ReadyClickSummary(members)
+        lines = ReadyClickSummary(members, nameContext)
     elseif columnKey == "worldBuffs" then
         lines = WorldBuffClickSummary(
-            members, options.shift == true)
+            members, options.shift == true, nameContext)
     elseif columnKey == "attackPower" then
         lines = BattleShoutClickSummary(
-            members, options.shift == true)
+            members, options.shift == true, nameContext)
     elseif columnKey == "disallowed" then
-        lines = DisallowedClickSummary(members)
+        lines = DisallowedClickSummary(members, nameContext)
     elseif columnKey == "flask" then
         lines = PresenceClickSummary(
             "Flask",
             members,
             function(member) return member.flask ~= nil end,
             "Missing Flask",
-            "have a Flask")
+            "have a Flask",
+            nameContext)
     elseif columnKey == "zanza" then
         lines = PresenceClickSummary(
             "Zanza",
@@ -2944,12 +3026,13 @@ function PRT:BuildRaidCheckClickReport(columnKey, snapshot, options)
                 return #(member.zanza or {}) > 0
             end,
             "Missing Zanza",
-            "have a Zanza buff")
+            "have a Zanza buff",
+            nameContext)
     elseif columnKey == "potions" then
         lines = PotionClickSummary(
-            members, options.spellId)
+            members, options.spellId, nameContext)
     elseif columnKey == "consumes" then
-        lines = ConsumesClickSummary(members)
+        lines = ConsumesClickSummary(members, nameContext)
     elseif columnKey == "durability" then
         lines = DurabilitySummary(snapshot)
     else
@@ -2960,10 +3043,11 @@ function PRT:BuildRaidCheckClickReport(columnKey, snapshot, options)
                     snapshot,
                     options.member,
                     columnKey,
-                    buffReport)
+                    buffReport,
+                    nameContext)
             else
                 lines = BuffClickSummary(
-                    snapshot, columnKey, buffReport)
+                    snapshot, columnKey, buffReport, nameContext)
             end
         end
     end

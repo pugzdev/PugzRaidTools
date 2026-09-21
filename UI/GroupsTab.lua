@@ -107,9 +107,17 @@ local function SetSlotBorder(panel, slotIdx, r, g, b)
     end
 end
 
+local function RealmWarningColor(kind)
+    if kind == "invalid" then return PRT.C.RED end
+    if kind == "duplicate" then return PRT.C.GOLD end
+    return PRT.C.YELLOW
+end
+
 local function ClearSlotBorder(panel, slotIdx)
-    if panel.duplicateSlots and panel.duplicateSlots[slotIdx] then
-        SetSlotBorder(panel, slotIdx, PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
+    local warningState = panel.duplicateSlots and panel.duplicateSlots[slotIdx]
+    if warningState then
+        local color = RealmWarningColor(warningState.kind)
+        SetSlotBorder(panel, slotIdx, color[1], color[2], color[3])
     else
         SetSlotBorder(panel, slotIdx, PRT.C.BORDER[1], PRT.C.BORDER[2], PRT.C.BORDER[3])
     end
@@ -482,6 +490,23 @@ function PRT:BuildGroupsTab()
     compNameLabel:SetPoint("TOPLEFT", 12, -4)
     panel.compNameLabel = compNameLabel
 
+    local helpBtn = W.CreateButton(panel, "Help", 54, 20)
+    helpBtn:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -8, -2)
+    helpBtn:SetScript("OnClick", function()
+        if PRT.ToggleRaidGroupsHelp then
+            PRT:ToggleRaidGroupsHelp("import")
+        end
+    end)
+    W.AttachTooltip(helpBtn, {
+        anchor = "ANCHOR_LEFT",
+        title = "Raid Groups Help",
+        titleColor = PRT.C.TITLE,
+        lines = {
+            { "Open guides for importing, player names, saving, sorting and automation.", 1, 1, 1, true },
+        },
+    })
+    panel.helpButton = helpBtn
+
     ---------------------------------------------------------------------------
     -- Group grid (1,3,5,7 = left | 2,4,6,8 = right)
     ---------------------------------------------------------------------------
@@ -536,6 +561,9 @@ function PRT:BuildGroupsTab()
                     PRT:SetRealmRosterSlot(panel.editorRoster, self.slotIndex, self:GetText())
                     panel.dirty = true
                     panel:RefreshDuplicateWarnings()
+                    if panel.RefreshSaveControls then
+                        panel:RefreshSaveControls()
+                    end
                     if panel.RefreshRoleIndicators then
                         panel:RefreshRoleIndicators()
                     end
@@ -566,7 +594,10 @@ function PRT:BuildGroupsTab()
             LayoutSlotIcons(panel, idx)
 
             -- Overlay Button (sits on top for drag + click-to-edit)
-            local ov = W.CreateOverlayButton(panel, eb, { dragButton = "LeftButton" })
+            local ov = W.CreateOverlayButton(panel, eb, {
+                dragButton = "LeftButton",
+                clicks = "LeftButtonUp",
+            })
             ov.slotIndex = idx
 
             ov:SetScript("OnClick", function(self, button)
@@ -745,24 +776,27 @@ function PRT:BuildGroupsTab()
     panel.quickScroll  = quickScroll
     panel.quickButtons = {}
 
-    local requireCB = W.CreateCheckbox(quickPanel, "Require Server Names", function(checked)
+    local requireCB = W.CreateCheckbox(quickPanel, "Auto-Accept Unspecified Servers", function(checked)
         panel:FinishEditing()
-        PRT:GetDB().settings.requireServerNames = checked and true or false
+        -- Preserve the legacy setting key while presenting the policy positively:
+        -- checked auto-accepts unique matches, which is requireServerNames=false.
+        PRT:GetDB().settings.requireServerNames = not checked
         panel:RefreshHighlights()
         PRT:RefreshRealmCompositions()
     end)
     requireCB:SetPoint("BOTTOMLEFT", 4, 104)
-    W.AttachTooltip(requireCB.check, { title = "Require Server Names", titleColor = PRT.C.TITLE, lines = {
-        { "New names imported without a server start with their server unspecified.", 1, 1, 1, true },
+    W.AttachTooltip(requireCB.check, { title = "Auto-Accept Unspecified Servers", titleColor = PRT.C.TITLE, lines = {
+        { "Controls roster names imported without a server.", 1, 1, 1, true },
         " ",
-        { "Checked: verify each player", 1, 0.82, 0.3, true },
-        { "Click the cell's warning triangle to accept a match, including players on your own server.", 1, 1, 1, true },
+        { "Checked: accept unique matches automatically", 0.2, 1, 0.6, true },
+        { "When exactly one eligible player is in the raid, their full Name-Server identity is accepted.", 1, 1, 1, true },
+        { "Multiple possible players still require you to choose the intended identity.", 1, 0.82, 0.3, true },
         " ",
-        { "Unchecked: accept unique matches", 0.2, 1, 0.6, true },
-        { "The first unambiguous match is accepted automatically. Multiple possible players require a choice.", 1, 1, 1, true },
+        { "Unchecked: ask before accepting", 1, 0.82, 0.3, true },
+        { "Each matching player waits for you to click the cell's warning triangle, including players on your own server.", 1, 1, 1, true },
         " ",
-        { "Supplied or accepted servers always stay exact.", 1, 0.82, 0.3, true },
-        { "Keep changes ON: accepted names save automatically. OFF: click Save Changes.", 0.8, 0.8, 0.8, true },
+        { "Names imported as Name-Server always remain exact. A matching name is never guessed when more than one player could fit.", 1, 0.82, 0.3, true },
+        { "Auto-Save Changes ON: accepted names save automatically. OFF: click Save Changes.", 0.8, 0.8, 0.8, true },
         { "Applies to all compositions. Existing saved rosters retain their previous meaning until edited or reimported.", 0.8, 0.8, 0.8, true },
     } })
     local hideCB = W.CreateCheckbox(quickPanel, "Hide Server Names", function(checked)
@@ -780,6 +814,7 @@ function PRT:BuildGroupsTab()
         { "Click into a cell to edit its full expected name.", 0.8, 0.8, 0.8, true },
     } })
     panel.requireServerNames = requireCB
+    panel.autoAcceptUnspecifiedServers = requireCB
     panel.hideServerNames = hideCB
     panel.realmStatus = W.CreateLabel(quickPanel, "", PRT.FONT_SIZE - 1,
         PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
@@ -912,7 +947,7 @@ function PRT:BuildGroupsTab()
         title = "Import Paste text below",
     })
     local realmImportHint = W.CreateDescription(shapePopup,
-        "Name = server unspecified. Name-Server = exact player.\nRequire Server Names controls verification; cell warnings explain any conflicts.",
+        "Name = server unspecified. Name-Server = exact player.\nAuto-Accept Unspecified Servers controls unique matches; cell warnings explain any conflicts.",
         { fontSize = PRT.FONT_SIZE - 1 })
     realmImportHint:SetPoint("BOTTOMLEFT", 14, 8)
     realmImportHint:SetWidth(492)
@@ -939,38 +974,243 @@ function PRT:BuildGroupsTab()
         cancelText = false,
     })
 
+    ---------------------------------------------------------------------------
+    -- Named import collision popup. All choices are resolved before any saved
+    -- composition is changed, so cancelling a multi-import is all-or-nothing.
+    ---------------------------------------------------------------------------
+    local importConflictPopup
+    local ContinueNamedImport
+
+    local function CancelNamedImport(message)
+        if not importConflictPopup or not importConflictPopup._state then return end
+        importConflictPopup._state = nil
+        importConflictPopup._suppressCancel = true
+        importConflictPopup:Hide()
+        importConflictPopup._suppressCancel = nil
+        PRT.Print(message or "Import cancelled. No raid groups were changed.")
+    end
+
+    importConflictPopup = W.CreatePopupFrame("PRT_ImportConflictPopup", 410, 178, {
+        title = "Raid Group Already Exists",
+        onClose = function()
+            CancelNamedImport()
+        end,
+    })
+
+    local conflictMessage = W.CreateLabel(importConflictPopup, "", PRT.FONT_SIZE, 0.9, 0.9, 0.9)
+    conflictMessage:SetPoint("TOPLEFT", 12, -34)
+    conflictMessage:SetPoint("TOPRIGHT", -12, -34)
+    conflictMessage:SetHeight(38)
+    conflictMessage:SetJustifyH("LEFT")
+    pcall(function() conflictMessage:SetWordWrap(true) end)
+    importConflictPopup.messageLabel = conflictMessage
+
+    local renameLabel = W.CreateLabel(importConflictPopup, "Rename this import:",
+        PRT.FONT_SIZE - 1, 0.8, 0.8, 0.8)
+    renameLabel:SetPoint("TOPLEFT", 12, -78)
+
+    local conflictNameEdit = W.CreateEditBox(importConflictPopup, 386, 22)
+    conflictNameEdit:SetPoint("TOPLEFT", 12, -94)
+    conflictNameEdit:SetPoint("TOPRIGHT", -12, -94)
+    importConflictPopup.nameEdit = conflictNameEdit
+
+    local conflictError = W.CreateLabel(importConflictPopup, "", PRT.FONT_SIZE - 1,
+        PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3])
+    conflictError:SetPoint("TOPLEFT", 12, -119)
+    conflictError:SetPoint("TOPRIGHT", -12, -119)
+    importConflictPopup.errorLabel = conflictError
+
+    local overwriteImportBtn = W.CreateButton(importConflictPopup, "Overwrite", 112, 24, {
+        textColor = PRT.C.RED,
+    })
+    overwriteImportBtn:SetPoint("BOTTOMLEFT", 12, 9)
+    importConflictPopup.overwriteButton = overwriteImportBtn
+
+    local renameImportBtn = W.CreateButton(importConflictPopup, "Rename & Import", 132, 24)
+    renameImportBtn:SetPoint("LEFT", overwriteImportBtn, "RIGHT", 7, 0)
+    importConflictPopup.renameButton = renameImportBtn
+
+    local cancelImportBtn = W.CreateButton(importConflictPopup, "Cancel Import", 120, 24)
+    cancelImportBtn:SetPoint("LEFT", renameImportBtn, "RIGHT", 7, 0)
+    importConflictPopup.cancelButton = cancelImportBtn
+
+    local function NameUsedByLaterImport(state, name)
+        for index = state.index + 1, #state.comps do
+            if PRT.Trim(state.comps[index].name) == name then return true end
+        end
+        return false
+    end
+
+    local function RenameUnavailable(state, name)
+        return PRT:GetComp(name) ~= nil
+            or state.finalByName[name] ~= nil
+            or NameUsedByLaterImport(state, name)
+    end
+
+    local function SuggestImportName(state, baseName)
+        local suffix = 2
+        local candidate = baseName .. " (" .. suffix .. ")"
+        while RenameUnavailable(state, candidate) do
+            suffix = suffix + 1
+            candidate = baseName .. " (" .. suffix .. ")"
+        end
+        return candidate
+    end
+
+    local function QueueNamedImport(state, name, roster, overwrite)
+        local actionIndex = #state.actions + 1
+        state.actions[actionIndex] = {
+            name = name,
+            roster = roster,
+            overwrite = overwrite and true or false,
+        }
+        state.finalByName[name] = actionIndex
+        state.firstImported = state.firstImported or name
+    end
+
+    local function CommitNamedImport(state)
+        for _, action in ipairs(state.actions) do
+            if action.overwrite then
+                PRT:UpdateCompRoster(action.name, action.roster)
+            else
+                PRT:AddComp(action.name, action.roster)
+            end
+        end
+
+        importConflictPopup._state = nil
+        importConflictPopup._suppressCancel = true
+        importConflictPopup:Hide()
+        importConflictPopup._suppressCancel = nil
+
+        panel:RefreshQuickLoad()
+        panel:LoadComp(state.firstImported)
+        if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
+
+        local count = #state.actions
+        local msg = "Imported " .. count .. " PRT composition" .. (count == 1 and "" or "s") .. "."
+        local details = {}
+        if state.overwritten > 0 then
+            details[#details + 1] = state.overwritten .. " overwritten"
+        end
+        if state.renamed > 0 then
+            details[#details + 1] = state.renamed .. " renamed"
+        end
+        if #details > 0 then msg = msg .. " " .. table.concat(details, ", ") .. "." end
+        PRT.Print(msg)
+    end
+
+    local function ShowNamedImportConflict(state, existing)
+        local comp = state.comps[state.index]
+        local name = PRT.Trim(comp.name)
+        importConflictPopup._state = state
+        importConflictPopup._existingConflict = existing and true or false
+        importConflictPopup.titleLabel:SetText("Raid Group Already Exists")
+        if existing then
+            conflictMessage:SetText("Raid group " .. state.index .. " of " .. #state.comps
+                .. " is named '" .. name .. "', which already exists. Overwrite it or enter a new name.")
+            overwriteImportBtn:SetLabel("Overwrite")
+        else
+            conflictMessage:SetText("Raid group " .. state.index .. " of " .. #state.comps
+                .. " repeats the name '" .. name .. "' in this import. Replace the earlier copy or enter a new name.")
+            overwriteImportBtn:SetLabel("Use This Copy")
+        end
+        conflictError:SetText("")
+        conflictNameEdit:SetText(SuggestImportName(state, name))
+        importConflictPopup:Show()
+        importConflictPopup:BringToFront()
+        conflictNameEdit:SetFocus()
+        conflictNameEdit:HighlightText()
+    end
+
+    ContinueNamedImport = function(state)
+        while state.index <= #state.comps do
+            local comp = state.comps[state.index]
+            local name = PRT.Trim(comp.name)
+            local existing = PRT:GetComp(name) ~= nil
+            if existing or state.finalByName[name] then
+                ShowNamedImportConflict(state, existing)
+                return
+            end
+            QueueNamedImport(state, name, comp.roster, false)
+            state.index = state.index + 1
+        end
+        CommitNamedImport(state)
+    end
+
+    local function ChooseOverwrite()
+        local state = importConflictPopup._state
+        if not state then return end
+        local comp = state.comps[state.index]
+        local name = PRT.Trim(comp.name)
+        local actionIndex = state.finalByName[name]
+        if actionIndex then
+            state.actions[actionIndex].roster = comp.roster
+        else
+            QueueNamedImport(state, name, comp.roster, true)
+        end
+        state.overwritten = state.overwritten + 1
+        state.index = state.index + 1
+        ContinueNamedImport(state)
+    end
+
+    local function ChooseRename()
+        local state = importConflictPopup._state
+        if not state then return end
+        local name = PRT.Trim(conflictNameEdit:GetText())
+        if name == "" then
+            conflictError:SetText("Enter a name for this raid group.")
+            return
+        end
+        if RenameUnavailable(state, name) then
+            conflictError:SetText("'" .. name .. "' is already in use. Choose another name.")
+            return
+        end
+        local comp = state.comps[state.index]
+        QueueNamedImport(state, name, comp.roster, false)
+        state.renamed = state.renamed + 1
+        state.index = state.index + 1
+        ContinueNamedImport(state)
+    end
+
+    overwriteImportBtn:SetScript("OnClick", ChooseOverwrite)
+    renameImportBtn:SetScript("OnClick", ChooseRename)
+    conflictNameEdit:SetScript("OnEnterPressed", ChooseRename)
+    cancelImportBtn:SetScript("OnClick", function() CancelNamedImport() end)
+    importConflictPopup:HookScript("OnHide", function(self)
+        if self._state and not self._suppressCancel then
+            self._state = nil
+            PRT.Print("Import cancelled. No raid groups were changed.")
+        end
+    end)
+
+    function panel:BeginNamedCompositionImport(comps)
+        if not comps or #comps == 0 then return false end
+        local state = {
+            comps = comps,
+            actions = {},
+            finalByName = {},
+            index = 1,
+            overwritten = 0,
+            renamed = 0,
+        }
+        ContinueNamedImport(state)
+        return true
+    end
+
+    panel.importConflictPopup = importConflictPopup
+
     sipNamePopup.onAccept = function(text)
         local name = PRT.Trim(text)
         if name == "" then return false end
         local roster = sipNamePopup._roster
         if not roster then return false end
-        if PRT:GetComp(name) then
-            PRT.Print("'" .. name .. "' already exists.")
-            return false
-        end
-        PRT:AddComp(name, roster)
-        panel:RefreshQuickLoad()
-        panel:LoadComp(name)
-        if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
-        PRT.Print("Imported: " .. name)
+        panel:BeginNamedCompositionImport({ { name = name, roster = roster } })
         return true
     end
 
     ---------------------------------------------------------------------------
     -- Helper: process pasted text, then import directly or show the naming popup
     ---------------------------------------------------------------------------
-    local function MakeUniqueImportName(baseName)
-        baseName = PRT.Trim(baseName)
-        if baseName == "" then baseName = "Imported" end
-
-        local name = baseName
-        local suffix = 2
-        while PRT:GetComp(name) do
-            name = baseName .. " (" .. suffix .. ")"
-            suffix = suffix + 1
-        end
-        return name, name ~= baseName
-    end
 
     local function ProcessShapedPaste(str)
         local shape = shapePopup._selectedShape
@@ -985,24 +1225,7 @@ function PRT:BuildGroupsTab()
                 return
             end
 
-            local firstImported
-            local renamedDuplicates = false
-            for _, comp in ipairs(comps) do
-                local name, renamed = MakeUniqueImportName(comp.name)
-                renamedDuplicates = renamedDuplicates or renamed
-                PRT:AddComp(name, comp.roster)
-                firstImported = firstImported or name
-            end
-
-            panel:RefreshQuickLoad()
-            panel:LoadComp(firstImported)
-            if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
-
-            local msg = "Imported " .. #comps .. " PRT composition" .. (#comps == 1 and "" or "s") .. "."
-            if renamedDuplicates then
-                msg = msg .. " Duplicate names were numbered."
-            end
-            PRT.Print(msg)
+            panel:BeginNamedCompositionImport(comps)
             return
         end
 
@@ -1267,39 +1490,93 @@ function PRT:BuildGroupsTab()
     ---------------------------------------------------------------------------
     local btnApply = W.CreateButton(panel, "Apply Groups", 150, 26)
     btnApply:SetPoint("BOTTOMLEFT", 12, 6)
+    panel.applyGroupsButton = btnApply
     btnApply:SetScript("OnClick", function()
         if panel.selectedComp then
-            -- Commit the focused edit to the editor model before Keep Changes
+            -- Commit the focused edit to the editor model before Auto-Save Changes
             -- decides whether this Apply should update the saved composition.
             panel:FinishEditing()
             panel:AutoSave()
             local db = PRT:GetDB()
+            if panel:IsManualSaveDirty() then
+                local changes = panel:GetUnsavedRosterChanges()
+                if #changes > 0 then
+                    PRT.Print(("Applying saved version - %d unsaved roster %s not included.")
+                        :format(#changes, #changes == 1 and "change was" or "changes were"))
+                else
+                    PRT.Print("Applying saved version - unsaved roster matching changes were not included.")
+                end
+            end
             PRT:RequestReorder(panel.selectedComp, db.settings.forcePositions)
         end
     end)
+    W.AttachTooltip(btnApply, {
+        anchor = "ANCHOR_TOP",
+        minWidth = 360,
+        shouldShow = function() return panel:ShouldShowApplyTooltip() end,
+        getLines = function() return panel:GetApplyTooltipLines() end,
+    })
 
     local btnSetCurrent = W.CreateButton(panel, "Set Current Roster", 170, 26)
     btnSetCurrent:SetPoint("LEFT", btnApply, "RIGHT", 8, 0)
     btnSetCurrent:SetScript("OnClick", function() panel:SnapshotCurrentRaid() end)
+    W.AttachTooltip(btnSetCurrent, {
+        anchor = "ANCHOR_TOP",
+        title = "Set Current Roster",
+        titleColor = PRT.C.TITLE,
+        minWidth = 390,
+        getLines = function()
+            local lines = {
+                { "Replaces this composition's roster with the raid's current group layout.", 1, 1, 1, true },
+                " ",
+                { "Copies every current raid member into their exact group and within-group position.", 1, 1, 1, true },
+                { "Stores each player using their full Name-Server identity.", 1, 1, 1, true },
+                " ",
+                { "This changes the composition only. It does not move anyone in the raid.", 1, 0.82, 0.3, true },
+            }
+            if PRT:GetDB().settings.keepChanges then
+                lines[#lines + 1] = { "Auto-Save Changes is ON: the captured roster will be saved immediately.", 0.2, 1, 0.6, true }
+            else
+                lines[#lines + 1] = { "Auto-Save Changes is OFF: review the captured roster, then click Save Changes.", 0.8, 0.8, 0.8, true }
+            end
+            return lines
+        end,
+    })
 
     local btnSave = W.CreateButton(panel, "Save Changes", 130, 26)
     btnSave:SetPoint("LEFT", btnSetCurrent, "RIGHT", 8, 0)
     btnSave:SetScript("OnClick", function() panel:CommitRoster() end)
+    panel.saveChangesButton = btnSave
+    W.AttachTooltip(btnSave, {
+        anchor = "ANCHOR_TOP",
+        title = "Save Changes: Pending Edits",
+        titleColor = PRT.C.GOLD,
+        minWidth = 420,
+        shouldShow = function() return panel:ShouldShowSaveTooltip() end,
+        getLines = function() return panel:GetSaveChangesTooltipLines() end,
+    })
 
-    -- Keep changes checkbox (auto-save)
-    local keepCB = W.CreateCheckbox(panel, "Keep changes", function(checked)
+    -- Auto-save checkbox (stored under the legacy keepChanges setting key).
+    local keepCB = W.CreateCheckbox(panel, "Auto-Save Changes", function(checked)
         local db = PRT:GetDB()
         db.settings.keepChanges = checked
         if checked and panel.dirty and panel.selectedComp then
             panel:AutoSave()
         end
         if checked then PRT:RefreshRealmCompositions() end
+        panel:RefreshSaveControls()
     end)
     keepCB:SetPoint("LEFT", btnSave, "RIGHT", 8, 0)
     W.AttachTooltip(keepCB.check, {
         anchor = "ANCHOR_TOP",
+        title = "Auto-Save Changes",
+        titleColor = PRT.C.TITLE,
+        minWidth = 380,
         lines = {
-            { "Automatically save any edits to the current composition.", 1, 1, 1, true },
+            { "Automatically saves roster edits when you finish editing a cell, move a player, or accept a server match.", 1, 1, 1, true },
+            " ",
+            { "When disabled, edits remain pending until you click Save Changes.", 1, 0.82, 0.3, true },
+            { "Apply Groups and the Floating List continue using the last saved composition.", 0.8, 0.8, 0.8, true },
         },
     })
 
@@ -1326,6 +1603,325 @@ function PRT:BuildGroupsTab()
         return r
     end
 
+    local function ChangeValue(value)
+        value = value or ""
+        return value ~= "" and value or "(empty)"
+    end
+
+    local function CurrentRaid()
+        return IsInRaid() and PRT.GetRaidRoster() or {}
+    end
+
+    local function AddTooltipLine(lines, text, color)
+        color = color or PRT.C.WHITE
+        lines[#lines + 1] = {
+            text, color[1], color[2], color[3], true,
+        }
+    end
+
+    local function SlotLocation(index)
+        return ("G%d S%d"):format(
+            math.floor((index - 1) / 5) + 1,
+            ((index - 1) % 5) + 1)
+    end
+
+    local function AddDuplicateDetails(lines, duplicates, limit)
+        limit = math.min(#duplicates, limit or 4)
+        for i = 1, limit do
+            local duplicate = duplicates[i]
+            local locations = {}
+            for _, index in ipairs(duplicate.slots or {}) do
+                locations[#locations + 1] = SlotLocation(index)
+            end
+            AddTooltipLine(lines, ("%s: %s"):format(
+                duplicate.displayName or duplicate.key or "Player",
+                table.concat(locations, ", ")), PRT.C.RED)
+        end
+        if #duplicates > limit then
+            AddTooltipLine(lines, ("...and %d more duplicate assignments.")
+                :format(#duplicates - limit), PRT.C.GRAY)
+        end
+    end
+
+    local function AddPreflightDetails(lines, preflight)
+        if preflight.hardError then
+            AddTooltipLine(lines, "Sort blocked", PRT.C.RED)
+            if #preflight.invalidExact > 0 then
+                AddTooltipLine(lines,
+                    "The same exact player is assigned to more than one cell.",
+                    PRT.C.RED)
+                AddDuplicateDetails(lines, preflight.invalidExact, 4)
+            elseif preflight.blockReason then
+                AddTooltipLine(lines, preflight.blockReason, PRT.C.RED)
+            end
+        elseif preflight.noActionable then
+            AddTooltipLine(lines, "Nothing can be sorted right now.", PRT.C.GOLD)
+            if preflight.blockReason then
+                AddTooltipLine(lines, preflight.blockReason, PRT.C.WHITE)
+            end
+        else
+            AddTooltipLine(lines, "Best-effort sort", PRT.C.GOLD)
+            AddTooltipLine(lines, ("%d resolved present roster %s will be sorted.")
+                :format(preflight.presentResolvedCount,
+                    preflight.presentResolvedCount == 1 and "player" or "players"))
+        end
+
+        if #preflight.unresolved > 0 then
+            AddTooltipLine(lines, ("%d unresolved roster %s will be skipped:")
+                :format(#preflight.unresolved,
+                    #preflight.unresolved == 1 and "cell" or "cells"), PRT.C.GOLD)
+            local limit = math.min(#preflight.unresolved, 5)
+            for i = 1, limit do
+                local entry = preflight.unresolved[i]
+                AddTooltipLine(lines, ("%s (G%d S%d)"):format(
+                    entry.raw, entry.group, entry.slot))
+            end
+            if #preflight.unresolved > limit then
+                AddTooltipLine(lines, ("...and %d more.")
+                    :format(#preflight.unresolved - limit), PRT.C.GRAY)
+            end
+            AddTooltipLine(lines,
+                "Corresponding live players are unconstrained and may move as collateral.",
+                PRT.C.GRAY)
+        end
+
+        if #preflight.missing > 0 then
+            AddTooltipLine(lines, ("%d resolved roster %s missing from the raid:")
+                :format(#preflight.missing,
+                    #preflight.missing == 1 and "player is" or "players are"), PRT.C.GOLD)
+            local limit = math.min(#preflight.missing, 5)
+            for i = 1, limit do
+                local entry = preflight.missing[i]
+                AddTooltipLine(lines, ("%s (G%d S%d)"):format(
+                    entry.raw, entry.group, entry.slot))
+            end
+            if #preflight.missing > limit then
+                AddTooltipLine(lines, ("...and %d more.")
+                    :format(#preflight.missing - limit), PRT.C.GRAY)
+            end
+        end
+
+        if #preflight.extra > 0 then
+            AddTooltipLine(lines, ("%d raid %s outside this composition:")
+                :format(#preflight.extra,
+                    #preflight.extra == 1 and "player is" or "players are"), PRT.C.GOLD)
+            local limit = math.min(#preflight.extra, 5)
+            for i = 1, limit do
+                local entry = preflight.extra[i]
+                AddTooltipLine(lines, ("%s (G%d)"):format(
+                    entry.name, entry.group))
+            end
+            if #preflight.extra > limit then
+                AddTooltipLine(lines, ("...and %d more.")
+                    :format(#preflight.extra - limit), PRT.C.GRAY)
+            end
+            AddTooltipLine(lines,
+                "Outside players are unconstrained and may move as collateral.",
+                PRT.C.GRAY)
+        end
+    end
+
+    function panel:GetUnsavedRosterChanges()
+        local changes = {}
+        local comp = self.selectedComp and PRT:GetComp(self.selectedComp)
+        local saved = comp and comp.roster or {}
+        for index = 1, 40 do
+            local before = saved[index] or ""
+            local after = self.editorRoster[index] or ""
+            if before ~= after then
+                changes[#changes + 1] = {
+                    index = index,
+                    group = math.floor((index - 1) / 5) + 1,
+                    slot = ((index - 1) % 5) + 1,
+                    before = before,
+                    after = after,
+                }
+            end
+        end
+        return changes
+    end
+
+    function panel:IsManualSaveDirty()
+        return self.selectedComp ~= nil
+            and self.dirty == true
+            and not PRT:GetDB().settings.keepChanges
+    end
+
+    function panel:GetEditorPreflight()
+        return PRT:GetRaidGroupsPreflight(self.editorRoster, CurrentRaid())
+    end
+
+    function panel:GetSavedPreflight()
+        local comp = self.selectedComp and PRT:GetComp(self.selectedComp)
+        return PRT:GetRaidGroupsPreflight(comp and comp.roster or {}, CurrentRaid())
+    end
+
+    function panel:GetApplyPreflight()
+        if PRT:GetDB().settings.keepChanges then
+            return self:GetEditorPreflight(), "Visible editor (saved before Apply)"
+        end
+        return self:GetSavedPreflight(), "Last saved composition"
+    end
+
+    function panel:ShouldShowApplyTooltip()
+        if not self.selectedComp then return false end
+        local preflight = self:GetApplyPreflight()
+        return self:IsManualSaveDirty() or preflight.severity ~= "clean"
+    end
+
+    function panel:GetApplyTooltipLines()
+        local changes = self:GetUnsavedRosterChanges()
+        local lines = {}
+        if self:IsManualSaveDirty() then
+            AddTooltipLine(lines, "Unsaved editor changes", PRT.C.YELLOW)
+            AddTooltipLine(lines, #changes > 0
+                and ("This editor has %d unsaved roster %s."):format(
+                    #changes, #changes == 1 and "change" or "changes")
+                or "This editor has unsaved roster matching changes.")
+            AddTooltipLine(lines,
+                "Apply Groups will continue using the last saved version.",
+                PRT.C.GOLD)
+            AddTooltipLine(lines,
+                "The visible unsaved changes will not be included.")
+            AddTooltipLine(lines, "Click Save Changes first to include them.",
+                PRT.C.TITLE)
+        end
+
+        local preflight, source = self:GetApplyPreflight()
+        if preflight.severity ~= "clean" then
+            if #lines > 0 then lines[#lines + 1] = " " end
+            AddTooltipLine(lines, "Apply source: " .. source, PRT.C.TITLE)
+            AddPreflightDetails(lines, preflight)
+        end
+        return lines
+    end
+
+    function panel:ShouldShowSaveTooltip()
+        if not self.selectedComp then return false end
+        if self:IsManualSaveDirty() then return true end
+        if not self.dirty then return false end
+        return #self:GetEditorPreflight().invalidExact > 0
+    end
+
+    function panel:GetSaveChangesTooltipLines()
+        local changes = self:GetUnsavedRosterChanges()
+        local editorPreflight = self:GetEditorPreflight()
+        local lines = {
+            { ("Composition: %s"):format(self.selectedComp or ""), 1, 1, 1, true },
+        }
+        if #changes == 0 then
+            lines[#lines + 1] = {
+                "Roster matching state has unsaved changes.",
+                PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3], true,
+            }
+        else
+            lines[#lines + 1] = {
+                ("Save %d pending roster %s:"):format(
+                    #changes, #changes == 1 and "change" or "changes"),
+                PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3], true,
+            }
+            local limit = math.min(#changes, 6)
+            for i = 1, limit do
+                local change = changes[i]
+                lines[#lines + 1] = {
+                    ("Group %d, Slot %d: %s -> %s"):format(
+                        change.group, change.slot,
+                        ChangeValue(change.before), ChangeValue(change.after)),
+                    1, 1, 1, true,
+                }
+            end
+            if #changes > limit then
+                lines[#lines + 1] = {
+                    ("...and %d more."):format(#changes - limit),
+                    PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3], true,
+                }
+            end
+        end
+
+        if #editorPreflight.invalidExact > 0 then
+            lines[#lines + 1] = " "
+            AddTooltipLine(lines,
+                "Saving would persist an invalid roster.", PRT.C.RED)
+            AddTooltipLine(lines,
+                "The same exact player is assigned to more than one cell.",
+                PRT.C.RED)
+            AddDuplicateDetails(lines, editorPreflight.invalidExact, 4)
+            AddTooltipLine(lines,
+                "Saving is allowed, but sorting will be blocked until the extra entries are removed.",
+                PRT.C.RED)
+        elseif #editorPreflight.unresolved > 0 then
+            lines[#lines + 1] = " "
+            AddTooltipLine(lines, ("After saving, %d unresolved roster %s will remain.")
+                :format(#editorPreflight.unresolved,
+                    #editorPreflight.unresolved == 1 and "cell" or "cells"),
+                PRT.C.GOLD)
+            AddTooltipLine(lines,
+                "Best-effort sorting will skip those cells until their server names are resolved.",
+                PRT.C.GRAY)
+        end
+
+        lines[#lines + 1] = " "
+        AddTooltipLine(lines, #editorPreflight.invalidExact > 0
+            and "Correct the duplicate cells before applying this composition."
+            or "Click to save these changes for Apply Groups, Group Auto Swap, and Smart Assign.",
+            PRT.C.TITLE)
+        return lines
+    end
+
+    function panel:RefreshSaveControls()
+        local normal = PRT.C.TITLE
+        local isManualDirty = self:IsManualSaveDirty()
+        local applyPreflight = self:GetApplyPreflight()
+        local editorPreflight = self:GetEditorPreflight()
+        local pendingInvalidDuplicate = self.dirty
+            and #editorPreflight.invalidExact > 0
+
+        local applyColor = normal
+        if not self.selectedComp then
+            applyColor = normal
+        elseif applyPreflight.severity == "error" then
+            applyColor = PRT.C.RED
+        elseif isManualDirty or applyPreflight.severity == "warning" then
+            applyColor = PRT.C.GOLD
+        end
+        btnApply.label:SetTextColor(
+            applyColor[1], applyColor[2], applyColor[3], applyColor[4] or 1)
+
+        local savePulseColor = pendingInvalidDuplicate and PRT.C.RED
+            or (isManualDirty and PRT.C.YELLOW or nil)
+        if savePulseColor then
+            btnSave._prtSavePulseTo = savePulseColor
+            if not btnSave._prtSavePulseActive then
+                btnSave._prtSavePulseActive = true
+                btnSave._prtSavePulseElapsed = 0
+                btnSave.label:SetTextColor(PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3], 1)
+                btnSave:SetScript("OnUpdate", function(button, elapsed)
+                    button._prtSavePulseElapsed = (button._prtSavePulseElapsed + elapsed) % 2.4
+                    local phase = button._prtSavePulseElapsed / 2.4
+                    local blend = 0.5 - 0.5 * math.cos(phase * math.pi * 2)
+                    local from, to = PRT.C.GOLD, button._prtSavePulseTo
+                    button.label:SetTextColor(
+                        from[1] + (to[1] - from[1]) * blend,
+                        from[2] + (to[2] - from[2]) * blend,
+                        from[3] + (to[3] - from[3]) * blend,
+                        1)
+                end)
+            end
+        else
+            btnSave._prtSavePulseActive = false
+            btnSave._prtSavePulseElapsed = 0
+            btnSave._prtSavePulseTo = nil
+            btnSave:SetScript("OnUpdate", nil)
+            btnSave.label:SetTextColor(normal[1], normal[2], normal[3], normal[4] or 1)
+        end
+
+        local floatingDirtyComp = isManualDirty and self.selectedComp or nil
+        if self._prtFloatingDirtyComp ~= floatingDirtyComp then
+            self._prtFloatingDirtyComp = floatingDirtyComp
+            if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
+        end
+    end
+
     function panel:AutoSave()
         if not self.selectedComp then return end
         if not self.dirty then return end
@@ -1334,6 +1930,8 @@ function PRT:BuildGroupsTab()
         local roster = self:GetEditorRoster()
         PRT:UpdateCompRoster(self.selectedComp, roster)
         self.dirty = false
+        self:RefreshSaveControls()
+        if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
         if PRT.RefreshRosterMatcherPopup then PRT:RefreshRosterMatcherPopup() end
     end
 
@@ -1353,11 +1951,12 @@ function PRT:BuildGroupsTab()
                 btn = W.CreateSelectableButton(content, "", {
                     height = btnH,
                     bgColor = { 0, 0, 0, 0 },
-                    selectedBgColor = PRT.C.SIDEBAR_SEL,
+                    selectedBgColor = PRT.C.MENU_SEL,
                     borderColor = { 0, 0, 0, 0 },
                     selectedBorderColor = { 0, 0, 0, 0 },
                     textColor = { 1, 1, 1, 1 },
-                    selectedTextColor = { PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3], 1 },
+                    selectedTextColor = { 1, 1, 1, 1 },
+                    selectedFontOutline = "OUTLINE",
                     fontSize = PRT.FONT_SIZE,
                     justifyH = "LEFT",
                     labelPoint = { "LEFT", 6, 0 },
@@ -1430,6 +2029,7 @@ function PRT:BuildGroupsTab()
         local roster = self:GetEditorRoster()
         PRT:UpdateCompRoster(self.selectedComp, roster)
         self.dirty = false
+        self:RefreshSaveControls()
         PRT.Print("Saved: " .. self.selectedComp)
         if PRT.RefreshFloatingList then PRT:RefreshFloatingList() end
         if PRT.RefreshRosterMatcherPopup then PRT:RefreshRosterMatcherPopup() end
@@ -1605,39 +2205,94 @@ function PRT:BuildGroupsTab()
         end
         local amber = { 1, 0.82, 0.3 }
         local muted = { 0.8, 0.8, 0.8 }
+        local function AddCandidate(prefix, candidate)
+            local r, g, b = PRT.GetClassColor(candidate.info.classFile)
+            Add(prefix .. candidate.fullName, { r, g, b })
+        end
+        local expectedBase = string.lower(PRT:SplitNameRealm(state.raw, false) or "")
+        local relatedConfirmed = {}
+        local relatedUnconfirmed = {}
+        for otherIndex, other in ipairs(self.realmStates) do
+            if otherIndex ~= index and other.raw ~= "" then
+                local otherBase = string.lower(PRT:SplitNameRealm(other.raw, false) or "")
+                if expectedBase ~= "" and otherBase == expectedBase then
+                    local related = { index = otherIndex, raw = other.raw }
+                    if other.key and (other.kind == nil or other.kind == "duplicate") then
+                        relatedConfirmed[#relatedConfirmed + 1] = related
+                    elseif not other.key then
+                        relatedUnconfirmed[#relatedUnconfirmed + 1] = related
+                    end
+                end
+            end
+        end
         local action
         if state.kind == "invalid" then
             Add("This exact player is assigned more than once.", PRT.C.RED)
             action = "Remove the extra entry. This warning cannot be dismissed."
         elseif state.kind == "duplicate" then
-            Add("Same character name, different servers.", amber)
-            action = "If intended, click the triangle to dismiss this cell's caution. The assigned player will not change."
+            Add("Confirmed exact player - advisory only.", PRT.C.GOLD)
+            if #relatedUnconfirmed > 0 then
+                action = "This assignment is valid. Resolve the highlighted unconfirmed cell, or click this triangle to dismiss this advisory."
+            else
+                action = "If intended, click the triangle to dismiss this advisory. The assigned player will not change."
+            end
         elseif state.kind == "waiting" then
-            Add("Server unspecified.", amber)
+            Add("Unconfirmed roster name - no matching player found.", amber)
             action = "Waiting for a matching player to join the raid."
         elseif state.kind == "claimed" then
-            Add("Matching players are already assigned elsewhere.", amber)
+            Add("Unconfirmed roster name - matches are already assigned.", amber)
             action = "Move their existing entries or edit this cell. One player cannot fill two cells."
         elseif state.kind == "mismatch" then
             Add("A matching name has an unexpected server.", amber)
-            action = "Click the triangle to accept the detected player and replace the expected entry."
+            local candidate = state.available and state.available[1]
+            action = candidate
+                and ("Click the triangle to use " .. candidate.fullName .. " instead.")
+                or "Click the triangle to use the detected player instead."
         elseif state.kind == "choose" then
-            Add("A player choice is required for this name.", amber)
+            Add("Unconfirmed roster name - player choice required.", amber)
             action = "Click the triangle to choose the full player name intended for this cell."
         elseif state.kind == "verify" then
-            Add("Matching player found - server not yet accepted.", amber)
-            action = "Click the triangle to verify and accept this player."
+            Add("Unconfirmed roster name - matching player found.", amber)
+            local candidate = state.available and state.available[1]
+            action = candidate
+                and ("Click the triangle to confirm " .. candidate.fullName .. " for this cell.")
+                or "Click the triangle to confirm the matching player for this cell."
         end
         Add(" ")
-        Add("Expected: " .. state.raw, amber)
         if state.kind == "duplicate" then
-            Add("Players sharing this name:", muted)
-            for _, name in ipairs(state.duplicateNames) do Add("  " .. name) end
-        elseif state.kind ~= "invalid" then
-            for _, candidate in ipairs(state.candidates) do
-                local r, g, b = PRT.GetClassColor(candidate.info.classFile)
-                Add("In raid: " .. candidate.fullName, { r, g, b })
+            Add("Confirmed: " .. state.raw .. " (" .. SlotLocation(index) .. ")", PRT.C.GOLD)
+            Add("This exact assignment is valid.", muted)
+            if #relatedUnconfirmed > 0 then
+                Add("Still unconfirmed:", amber)
+                for _, related in ipairs(relatedUnconfirmed) do
+                    Add("  " .. related.raw .. " (" .. SlotLocation(related.index) .. ")", PRT.C.YELLOW)
+                end
+            else
+                Add("Unassigned players sharing this name:", muted)
+                for _, candidate in ipairs(state.available or {}) do
+                    if candidate.key ~= state.key then AddCandidate("  ", candidate) end
+                end
             end
+        elseif state.kind ~= "invalid" then
+            Add("Expected: " .. state.raw .. " (" .. SlotLocation(index) .. ")", amber)
+            if not state.key and #relatedConfirmed > 0 then
+                Add("Confirmed elsewhere:", muted)
+                for _, related in ipairs(relatedConfirmed) do
+                    Add("  " .. related.raw .. " (" .. SlotLocation(related.index) .. ")", PRT.C.GOLD)
+                end
+            end
+            if state.kind == "choose" then
+                Add("Available matches:", muted)
+                for _, candidate in ipairs(state.available or {}) do AddCandidate("  ", candidate) end
+            elseif state.kind == "verify" and state.available and state.available[1] then
+                AddCandidate("Available match: ", state.available[1])
+            elseif state.kind == "claimed" and #relatedConfirmed == 0 then
+                for _, candidate in ipairs(state.candidates or {}) do AddCandidate("Already assigned: ", candidate) end
+            elseif state.kind == "mismatch" then
+                for _, candidate in ipairs(state.candidates or {}) do AddCandidate("Found in raid: ", candidate) end
+            end
+        else
+            Add("Expected: " .. state.raw .. " (" .. SlotLocation(index) .. ")", PRT.C.RED)
         end
         if action then
             Add(" ")
@@ -1647,7 +2302,7 @@ function PRT:BuildGroupsTab()
             Add("The caution returns if these identities change or the composition is reopened.", muted)
         elseif (state.kind == "verify" or state.kind == "mismatch" or state.kind == "choose")
             and not PRT:GetDB().settings.keepChanges then
-            Add("Keep changes is OFF: click Save Changes after accepting.", muted)
+            Add("Auto-Save Changes is OFF: click Save Changes after accepting.", muted)
         end
         return lines
     end
@@ -1725,12 +2380,20 @@ function PRT:BuildGroupsTab()
             local warning = self.duplicateWarnings[i]
             local button = self.realmWarningButtons[i]
             if self.duplicateSlots[i] then
-                SetSlotBorder(self, i, PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
-                if warning then warning:Show() end
+                local color = RealmWarningColor(kind)
+                SetSlotBorder(self, i, color[1], color[2], color[3])
+                if warning then
+                    warning:SetVertexColor(color[1], color[2], color[3],
+                        kind == "duplicate" and 0.7 or 1)
+                    warning:Show()
+                end
                 if button then button:Show() end
             else
                 ClearSlotBorder(self, i)
-                if warning then warning:Hide() end
+                if warning then
+                    warning:SetVertexColor(1, 1, 1, 1)
+                    warning:Hide()
+                end
                 if button then button:Hide() end
             end
             LayoutSlotIcons(self, i)
@@ -1864,6 +2527,7 @@ function PRT:BuildGroupsTab()
 
         self.extraScroll:UpdateContentHeight(#extra * btnH + 2)
         self:AutoSave()
+        self:RefreshSaveControls()
         if self.realmStatus then
             self.realmStatus:SetText(self.dirty and "Unsaved changes - click Save Changes"
                 or (unresolved > 0 and (unresolved .. " server names unresolved") or ""))
@@ -1875,7 +2539,7 @@ function PRT:BuildGroupsTab()
         local db = PRT:GetDB()
         keepCB:SetChecked(db.settings.keepChanges or false)
         forceCB:SetChecked(db.settings.forcePositions or false)
-        requireCB:SetChecked(db.settings.requireServerNames or false)
+        requireCB:SetChecked(not db.settings.requireServerNames)
         hideCB:SetChecked(db.settings.hideServerNames or false)
         if self.selectedComp then
             self:LoadComp(self.selectedComp)

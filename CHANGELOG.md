@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.4.2 - 2026-09-21
+
+### Changed
+
+- Added a step-by-step **Help** guide to Raid Groups: plan a roster, copy a spreadsheet, import encounter layouts, correct player names, save, sort, then reuse the plans for automatic swaps and marks. Complete spreadsheet examples retain their actual shapes, with switchable server names and single/multiple PRT imports; the larger window fits all eight group columns together.
+- Refined the guide's introduction and linked-spreadsheet workflow, added copyable NPC-ID lookup instructions and a C'thun before/after marking example, clarified reload/counter resets and automatic fast sorting, and replaced unsupported arrow glyphs. Exact-sort pauses and marking availability are now explained explicitly.
+- Named Raid Group imports now ask whether to overwrite or rename when a composition name already exists. Multi-composition imports resolve each collision separately and can be cancelled without partially changing saved rosters.
+- Raid Groups now makes manual-save edits visible at the point of action: **Apply Groups** turns amber and **Save Changes** gently pulses while unsaved roster changes exist.
+- Hovering **Apply Groups** explains that it will continue with the last saved composition, while hovering **Save Changes** lists up to six changed group slots and the remaining change count.
+- The manually edited composition also turns yellow in the Floating Raid Group List, where its tooltip warns that clicking the row still sorts the last saved version and excludes visible unsaved edits.
+- Applying with unsaved changes remains non-blocking and now reports that the saved version was used and how many visible roster changes were excluded.
+- **Apply Groups** and the Floating Raid Group List now share a live preflight: amber identifies best-effort sorts with unresolved cells, missing players, or players outside the composition, while red identifies a roster that cannot be sorted.
+- Their tooltips list the affected names and group slots, explain which entries will be skipped, and warn when unconstrained players may move as collateral.
+- Assigning the same exact player to multiple cells now gives those cells, **Apply Groups**, and the saved floating row a red error treatment. If the duplicate is still an unsaved edit, **Save Changes** pulses amber/red and explains that saving is allowed but would persist an invalid roster.
+- Floating composition warnings refresh when the live raid roster changes, even while the main configuration window is closed.
+- Renamed **Keep changes** to **Auto-Save Changes** and expanded its tooltip to explain exactly when edits are saved and what Apply/Floating actions use while it is disabled.
+- Replaced **Require Server Names** with the positively worded **Auto-Accept Unspecified Servers** control. Its checked state now accepts unique live matches automatically; disabling it requires warning-triangle confirmation, while ambiguous matches still require a choice.
+- Expanded the **Set Current Roster** tooltip to explain that it captures the live raid's exact group layout and full server identities without moving players.
+- Polished wrong-server warnings to distinguish the expected identity from the player found in the raid and name the replacement before it is accepted.
+- Distinguished related namesake warnings: a confirmed exact assignment now uses a subdued gold advisory, while the unresolved cell remains yellow and both tooltips identify the related group slots.
+- Floating composition tooltip titles now use an outlined font two points larger than their detail text.
+- Raid Check reports now omit server names for ordinary player lists and add them only when the current raid contains multiple characters with the same name. A new optional player-list limit keeps large reports concise while preserving the full affected count.
+- Loot Distribution can now retain one confirmed Apply request and retry every two seconds whenever the game rejects or fails to confirm it, without relying on local-player combat detection or continuously enforcing the preset after success. `/prt loot` reopens the prompt, while manual current-window linking has moved to `/prt link loot`.
+- Loot to Chat can use a configurable lower quality threshold for loot attributed to a skull-level or world-boss source; other automatic raid loot remains Epic or higher.
+- The main title now reads its version from addon metadata, matching the Settings footer. Selected navigation rows use white outlined text over the darker `#24D478` PRT highlight.
+
+### Preserved
+
+- With **Auto-Save Changes** enabled, Apply still finishes the active edit, saves it, and then sorts.
+- With **Auto-Save Changes** disabled, Apply still sorts the last saved composition; Group Auto Swap and Smart Assign continue sharing that durable saved roster.
+- Missing players and players outside a composition do not warn on **Save Changes**, because they describe the current raid rather than the data being saved.
+- An additional same-name player in the raid does not invalidate an exact realm-qualified assignment; if unassigned, that player is reported as outside the composition.
+
 ## 1.4.1 - 2026-09-07
 
 ### Changed

@@ -354,7 +354,7 @@ function PRT:BuildInviteToolsTab()
     -----------------------------------------------------------------------
     local lootHeader = W.CreateHeader(content, "Loot Distribution Prompt")
     local lootDescription = W.CreateDescription(content,
-        "When you enter a checked zone as group leader, or gain leadership there, PRT asks before applying these settings. It never continuously enforces them.", {
+        "When you enter a checked zone as group leader, or gain leadership there, PRT asks before applying these settings. Each confirmation requests one settings change; it does not continuously enforce the configuration. Use /prt loot to reopen the prompt.", {
             color = { 0.75, 0.75, 0.75 },
         })
     local lootEnabled = W.CreateCheckbox(content, "Enable loot setup prompts", function(checked)
@@ -401,6 +401,22 @@ function PRT:BuildInviteToolsTab()
         PRT:GetDB().inviteTools.loot.onlyInRaid = checked and true or false
     end)
     onlyRaid:SetWidth(290)
+
+    local retryUntilApplied = W.CreateCheckbox(content,
+        "Keep retrying until settings apply", function(checked)
+            PRT:GetDB().inviteTools.loot.retryUntilApplied = checked and true or false
+        end)
+    retryUntilApplied:SetWidth(340)
+    W.AttachTooltip(retryUntilApplied.check, {
+        anchor = "ANCHOR_TOP",
+        title = "Keep retrying until settings apply",
+        titleColor = PRT.C.TITLE,
+        lines = {
+            { "If the game rejects or does not confirm this Apply request, PRT retries the same request every 2 seconds until it succeeds.", 1, 1, 1, true },
+            { "PRT checks the actual loot settings, so it does not need to know which raid member is preventing the change.", 0.72, 0.72, 0.72, true },
+            { "Retrying stops if the preset, zone, raid eligibility or leadership changes. Completed settings are not continuously enforced.", 1, 0.82, 0, true },
+        },
+    })
 
     local zonesLabel = W.CreateLabel(content, "Apply in these zones:",
         PRT.FONT_SIZE, 0.82, 0.82, 0.82)
@@ -453,7 +469,7 @@ function PRT:BuildInviteToolsTab()
     -----------------------------------------------------------------------
     local lootChatHeader = W.CreateHeader(content, "Loot to Chat")
     local lootChatDescription = W.CreateDescription(content,
-        "Automatically links Epic-or-higher items from raid loot windows to group chat once per loot source. Use /prt loot to link the current loot window manually.", {
+        "Automatically links Epic-or-higher items from raid loot windows to group chat once per loot source. Use /prt link loot to link every item in the current loot window manually.", {
             color = { 0.75, 0.75, 0.75 },
         })
     local lootChatEnabled = W.CreateCheckbox(content,
@@ -467,6 +483,25 @@ function PRT:BuildInviteToolsTab()
             PRT:GetDB().inviteTools.lootToChat.includeItemLevel = checked and true or false
         end)
     lootChatItemLevel:SetWidth(220)
+    local bossLootThresholdEnabled = W.CreateCheckbox(content,
+        "Use a lower threshold for boss loot", function(checked)
+            PRT:GetDB().inviteTools.lootToChat.bossThresholdEnabled = checked and true or false
+            panel:Refresh()
+        end)
+    bossLootThresholdEnabled:SetWidth(310)
+    W.AttachTooltip(bossLootThresholdEnabled.check, {
+        anchor = "ANCHOR_TOP",
+        lines = {
+            { "When PRT can identify a loot source as a skull-level or world-boss unit, automatic announcements use the selected boss threshold instead of Epic.", 1, 1, 1, true },
+            { "Other raid loot remains Epic or higher. Manual /prt link loot still links every item.", 0.72, 0.72, 0.72, true },
+        },
+    })
+    local bossLootThresholdLabel = W.CreateLabel(content, "Boss loot threshold:",
+        PRT.FONT_SIZE, 0.82, 0.82, 0.82)
+    local bossLootThreshold = W.CreateDropdown(
+        content, 220, PRT.INVITE_LOOT_THRESHOLDS, function(value)
+            PRT:GetDB().inviteTools.lootToChat.bossThreshold = tonumber(value) or 3
+        end)
 
     -----------------------------------------------------------------------
     -- Raid disband and reinvites
@@ -659,6 +694,8 @@ function PRT:BuildInviteToolsTab()
         y = y - 31
         SetTopLeft(onlyRaid, 2, y)
         y = y - 31
+        SetTopLeft(retryUntilApplied, 2, y)
+        y = y - 31
         SetTopLeft(zonesLabel, 2, y)
         y = y - 22
         for index, zone in ipairs(PRT.INVITE_LOOT_ZONES) do
@@ -725,6 +762,12 @@ function PRT:BuildInviteToolsTab()
         SetTopLeft(lootChatEnabled, 2, y)
         y = y - 25
         SetTopLeft(lootChatItemLevel, 2, y)
+        y = y - 25
+        SetTopLeft(bossLootThresholdEnabled, 2, y)
+        y = y - 29
+        SetTopLeft(bossLootThresholdLabel, 2, y)
+        y = y - 19
+        SetTopLeft(bossLootThreshold, 2, y)
         y = y - 34
 
         scroller:UpdateContentHeight(-y)
@@ -748,8 +791,19 @@ function PRT:BuildInviteToolsTab()
         lootEnabled:SetChecked(cfg.loot.enabled)
         assignMasterLooter:SetChecked(cfg.loot.assignMasterLooter)
         onlyRaid:SetChecked(cfg.loot.onlyInRaid)
+        retryUntilApplied:SetChecked(cfg.loot.retryUntilApplied == true)
         lootChatEnabled:SetChecked(cfg.lootToChat.enabled)
         lootChatItemLevel:SetChecked(cfg.lootToChat.includeItemLevel)
+        bossLootThresholdEnabled:SetChecked(
+            cfg.lootToChat.bossThresholdEnabled == true)
+        bossLootThreshold:SetSelected(
+            tonumber(cfg.lootToChat.bossThreshold) or 3)
+        W.SetControlEnabled(bossLootThreshold,
+            cfg.lootToChat.bossThresholdEnabled == true)
+        bossLootThresholdLabel:SetTextColor(
+            cfg.lootToChat.bossThresholdEnabled == true and 0.82 or 0.42,
+            cfg.lootToChat.bossThresholdEnabled == true and 0.82 or 0.42,
+            cfg.lootToChat.bossThresholdEnabled == true and 0.82 or 0.42)
 
         if not promoteNamesEdit:HasFocus() then
             promoteNamesEdit:SetText(cfg.autoPromote.names or "")

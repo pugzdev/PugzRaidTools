@@ -468,7 +468,7 @@ function PRT:BuildSettingsTab()
 
     local versionLabel = W.CreateLabel(
         content,
-        "PugzRaidTools v" .. PRT.VERSION,
+        PRT:GetVersionDisplayText(),
         PRT.FONT_SIZE,
         0.8, 0.8, 0.8)
     versionLabel:SetPoint("TOPLEFT", LEFT_X, -1117)

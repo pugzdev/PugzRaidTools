@@ -455,7 +455,9 @@ local function CreateMainFrame()
     f.titleBar = titleBar
 
     -- title text
-    local title = W.CreateLabel(titleBar, "|cFF33FF99Pugz|rRaidTools", PRT.FONT_SIZE_TITLE)
+    local title = W.CreateLabel(titleBar,
+        "|cFF33FF99Pugz|rRaidTools |cffaaaaaav" .. tostring(PRT.VERSION or "") .. "|r",
+        PRT.FONT_SIZE_TITLE)
     title:SetPoint("LEFT", SIDEBAR_W + 12, 0)
 
     -- close button
@@ -492,11 +494,12 @@ local function CreateMainFrame()
             width = SIDEBAR_W,
             height = 26,
             bgColor = { 0, 0, 0, 0 },
-            selectedBgColor = PRT.C.SIDEBAR_SEL,
+            selectedBgColor = PRT.C.MENU_SEL,
             borderColor = { 0, 0, 0, 0 },
             selectedBorderColor = { 0, 0, 0, 0 },
             textColor = { 1, 1, 1, 1 },
-            selectedTextColor = PRT.C.TITLE,
+            selectedTextColor = { 1, 1, 1, 1 },
+            selectedFontOutline = "OUTLINE",
             fontSize = PRT.FONT_SIZE,
             justifyH = "LEFT",
             labelPoint = { "LEFT", 14, 0 },

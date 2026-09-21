@@ -97,7 +97,28 @@ function PRT:BuildRaidCheckTab()
             color = { 0.7, 0.7, 0.7 },
         })
     checksDescription:SetPoint("TOPLEFT", 2, -174)
-    checksDescription:SetPoint("TOPRIGHT", -8, -174)
+    checksDescription:SetWidth(300)
+
+    local abbreviatePlayerLists = W.CreateCheckbox(content,
+        "Shorten long player lists", function(checked)
+            PRT:GetDB().raidCheck.abbreviatePlayerLists = checked and true or false
+            panel:Refresh()
+        end)
+    abbreviatePlayerLists:SetWidth(230)
+    abbreviatePlayerLists:SetPoint("TOPLEFT", 318, -172)
+    W.AttachTooltip(abbreviatePlayerLists.check, {
+        anchor = "ANCHOR_TOP",
+        lines = {
+            { "When a report contains more players than the chosen limit, PRT lists the first names and finishes with 'and X more'.", 1, 1, 1, true },
+            { "The reported total remains the full number of affected players.", 0.72, 0.72, 0.72, true },
+        },
+    })
+
+    local playerListThreshold = W.CreateExactSlider(content,
+        "Player list limit", 1, 40, 1, 170, function(value)
+            PRT:GetDB().raidCheck.playerListThreshold = tonumber(value) or 10
+        end, 0)
+    playerListThreshold:SetPoint("TOPLEFT", 535, -162)
 
     ColumnReportButton(
         content, "Check World Buffs", "Report World Buffs", -202,
@@ -551,6 +572,12 @@ function PRT:BuildRaidCheckTab()
             cfg.allianceBlessingsOnly ~= false)
         dismissOnRightClick:SetChecked(
             cfg.dismissOnRightClick ~= false)
+        abbreviatePlayerLists:SetChecked(
+            cfg.abbreviatePlayerLists == true)
+        playerListThreshold:SetExactValue(
+            tonumber(cfg.playerListThreshold) or 10)
+        W.SetControlEnabled(playerListThreshold,
+            cfg.abbreviatePlayerLists == true)
 
         local orderedColumns = PRT:GetRaidCheckColumnOrder(true)
         for index, row in ipairs(orderRows) do

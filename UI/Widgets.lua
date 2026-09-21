@@ -318,6 +318,8 @@ function W.CreateSelectableButton(parent, text, opts)
     btn._selectedBorder = selectedBorder
     btn._normalText = normalText
     btn._selectedText = selectedText
+    btn._normalFontOutline = opts.fontOutline or ""
+    btn._selectedFontOutline = opts.selectedFontOutline or btn._normalFontOutline
     btn._selected = false
     btn._hasSelectableBorder = not opts.noBorder
     btn._mrtHoverAnimation = opts.hoverAnimation == "MRT"
@@ -420,6 +422,12 @@ function W.CreateSelectableButton(parent, text, opts)
                     self._selectedBorder[4] or 1)
             end
             self.label:SetTextColor(self._selectedText[1], self._selectedText[2], self._selectedText[3], self._selectedText[4] or 1)
+            if self.label.SetFont and self.label.GetFont then
+                local font, size = self.label:GetFont()
+                if font and size then
+                    self.label:SetFont(font, size, self._selectedFontOutline)
+                end
+            end
         else
             ApplyBackground(self, self._normalBg)
             if self._hasSelectableBorder then
@@ -428,6 +436,12 @@ function W.CreateSelectableButton(parent, text, opts)
                     self._normalBorder[4] or 1)
             end
             self.label:SetTextColor(self._normalText[1], self._normalText[2], self._normalText[3], self._normalText[4] or 1)
+            if self.label.SetFont and self.label.GetFont then
+                local font, size = self.label:GetFont()
+                if font and size then
+                    self.label:SetFont(font, size, self._normalFontOutline)
+                end
+            end
         end
     end
 

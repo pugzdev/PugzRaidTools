@@ -178,6 +178,9 @@ local function NormalizeInviteToolsPreset(preset)
     loot.masterLooter = PRT.Trim(tostring(loot.masterLooter or ""))
     loot.threshold = tonumber(loot.threshold) or 1
     if not lootThresholdByValue[loot.threshold] then loot.threshold = 1 end
+    loot.retryUntilApplied = Bool(loot.retryUntilApplied, false)
+        or Bool(loot.retryAfterCombat, false)
+    loot.retryAfterCombat = nil
     loot.onlyInRaid = Bool(loot.onlyInRaid, true)
     loot.zones = type(loot.zones) == "table" and loot.zones or {}
     for _, zone in ipairs(PRT.INVITE_LOOT_ZONES) do
@@ -189,6 +192,12 @@ local function NormalizeInviteToolsPreset(preset)
     local lootToChat = type(preset.lootToChat) == "table" and preset.lootToChat or {}
     lootToChat.enabled = Bool(lootToChat.enabled, false)
     lootToChat.includeItemLevel = Bool(lootToChat.includeItemLevel, false)
+    lootToChat.bossThresholdEnabled = Bool(
+        lootToChat.bossThresholdEnabled, false)
+    lootToChat.bossThreshold = tonumber(lootToChat.bossThreshold) or 3
+    if not lootThresholdByValue[lootToChat.bossThreshold] then
+        lootToChat.bossThreshold = 3
+    end
     preset.lootToChat = lootToChat
     return preset
 end
@@ -380,6 +389,7 @@ function PRT:ExportInviteToolsPreset(preset)
     lines[#lines + 1] = "assignMasterLooter=" .. tostring(preset.loot.assignMasterLooter)
     lines[#lines + 1] = "masterLooter=" .. EncodeInviteField(preset.loot.masterLooter)
     lines[#lines + 1] = "lootThreshold=" .. tostring(preset.loot.threshold)
+    lines[#lines + 1] = "retryUntilApplied=" .. tostring(preset.loot.retryUntilApplied)
     lines[#lines + 1] = "onlyInRaid=" .. tostring(preset.loot.onlyInRaid)
     for _, zone in ipairs(PRT.INVITE_LOOT_ZONES) do
         lines[#lines + 1] = "zone." .. zone.key .. "=" .. tostring(preset.loot.zones[zone.key] and true or false)
@@ -390,6 +400,8 @@ function PRT:ExportInviteToolsPreset(preset)
     end
     lines[#lines + 1] = "lootToChatEnabled=" .. tostring(preset.lootToChat.enabled)
     lines[#lines + 1] = "includeItemLevel=" .. tostring(preset.lootToChat.includeItemLevel)
+    lines[#lines + 1] = "bossThresholdEnabled=" .. tostring(preset.lootToChat.bossThresholdEnabled)
+    lines[#lines + 1] = "bossThreshold=" .. tostring(preset.lootToChat.bossThreshold)
     return table.concat(lines, "\n")
 end
 
@@ -417,6 +429,8 @@ function PRT:ParseInviteToolsPresetString(raw)
         elseif key == "assignMasterLooter" then preset.loot.assignMasterLooter = ParseBool(value)
         elseif key == "masterLooter" then preset.loot.masterLooter = DecodeInviteField(value)
         elseif key == "lootThreshold" then preset.loot.threshold = tonumber(value) or 1
+        elseif key == "retryUntilApplied" then preset.loot.retryUntilApplied = ParseBool(value)
+        elseif key == "retryAfterCombat" then preset.loot.retryUntilApplied = ParseBool(value)
         elseif key == "onlyInRaid" then preset.loot.onlyInRaid = ParseBool(value)
         elseif key and key:match("^zone%.") then
             preset.loot.zones[key:sub(6)] = ParseBool(value)
@@ -428,6 +442,8 @@ function PRT:ParseInviteToolsPresetString(raw)
             }
         elseif key == "lootToChatEnabled" then preset.lootToChat.enabled = ParseBool(value)
         elseif key == "includeItemLevel" then preset.lootToChat.includeItemLevel = ParseBool(value)
+        elseif key == "bossThresholdEnabled" then preset.lootToChat.bossThresholdEnabled = ParseBool(value)
+        elseif key == "bossThreshold" then preset.lootToChat.bossThreshold = tonumber(value) or 3
         end
     end
     return NormalizeInviteToolsPreset(preset)
@@ -1379,13 +1395,17 @@ end
 
 local INVITE_LOOT_APPLY_TIMEOUT = 12
 local INVITE_LOOT_APPLY_POLL_INTERVAL = 0.25
+local INVITE_LOOT_RETRY_INTERVAL = 2
 
 local function SetInviteLootThresholdCompat(threshold)
     if not SetLootThreshold then
         return false, "this client does not expose a loot-threshold API"
     end
-    local ok, err = pcall(SetLootThreshold, threshold)
-    if not ok then return false, err end
+    local ok, result = pcall(SetLootThreshold, threshold)
+    if not ok then return false, result end
+    if result == false then
+        return false, "the game rejected the requested loot threshold"
+    end
     return true
 end
 
@@ -1393,6 +1413,15 @@ local function ClearPendingInviteLootApply()
     if not PRT._inviteLootApplyState then return end
     PRT._inviteLootApplyState = nil
     if PRT.UpdateInviteToolsListeners then
+        PRT:UpdateInviteToolsListeners()
+    end
+end
+
+local function ClearQueuedInviteLootRetry()
+    local hadState = PRT._inviteLootRetryState ~= nil
+    PRT._inviteLootRetrySerial = (PRT._inviteLootRetrySerial or 0) + 1
+    PRT._inviteLootRetryState = nil
+    if hadState and PRT.UpdateInviteToolsListeners then
         PRT:UpdateInviteToolsListeners()
     end
 end
@@ -1406,7 +1435,8 @@ local function PendingInviteLootContextIsValid(state)
     if cfg ~= state.config
         or cfg.method ~= state.method.value
         or tonumber(cfg.threshold) ~= state.threshold
-        or (cfg.assignMasterLooter and true or false) ~= state.assignMasterLooter then
+        or (cfg.assignMasterLooter and true or false) ~= state.assignMasterLooter
+        or (state.retryUntilApplied and cfg.retryUntilApplied ~= true) then
         return false, "The configured loot settings changed"
     end
     if state.assignMasterLooter
@@ -1426,6 +1456,41 @@ local function PendingInviteLootContextIsValid(state)
         return false, "You are no longer in a raid group"
     end
     return true
+end
+
+local function QueueInviteLootRetry(state)
+    state.phase = nil
+    state.deadline = nil
+    PRT._inviteLootRetryState = state
+    PRT._inviteLootRetrySerial = (PRT._inviteLootRetrySerial or 0) + 1
+    local serial = PRT._inviteLootRetrySerial
+    if PRT.UpdateInviteToolsListeners then
+        PRT:UpdateInviteToolsListeners()
+    end
+    if not state.retryAnnounced then
+        state.retryAnnounced = true
+        PRT.Print(("The game did not accept or confirm the requested loot settings. PRT will keep retrying this Apply request every %d seconds until it succeeds or its configuration becomes invalid.")
+            :format(INVITE_LOOT_RETRY_INTERVAL))
+    end
+    C_Timer.After(INVITE_LOOT_RETRY_INTERVAL, function()
+        if PRT._inviteLootRetryState == state
+            and PRT._inviteLootRetrySerial == serial then
+            PRT:RetryQueuedInviteLootApply()
+        end
+    end)
+end
+
+function PRT:RetryQueuedInviteLootApply()
+    local state = self._inviteLootRetryState
+    if not state then return false end
+    local valid, reason = PendingInviteLootContextIsValid(state)
+    if not valid then
+        ClearQueuedInviteLootRetry()
+        PRT.Print(reason .. "; the queued loot-settings request was cancelled.")
+        return false
+    end
+    ClearQueuedInviteLootRetry()
+    return self:ApplyInviteLootSettings(true)
 end
 
 local function PendingInviteLootMethodIsConfirmed(state, current)
@@ -1472,6 +1537,10 @@ local function ProcessPendingInviteLootApply()
         local ok, err = SetInviteLootThresholdCompat(state.threshold)
         if not ok then
             ClearPendingInviteLootApply()
+            if state.config.retryUntilApplied then
+                QueueInviteLootRetry(state)
+                return true
+            end
             PRT.Print("Unable to set loot threshold: " .. tostring(err))
             return true
         end
@@ -1493,6 +1562,10 @@ local function SchedulePendingInviteLootApplyPoll(state)
         if PRT._inviteLootApplyState ~= state then return end
         if Now() >= state.deadline then
             ClearPendingInviteLootApply()
+            if state.config.retryUntilApplied then
+                QueueInviteLootRetry(state)
+                return
+            end
             PRT.Print("The configured loot method and threshold were not confirmed; the operation stopped.")
             return
         end
@@ -1501,7 +1574,7 @@ local function SchedulePendingInviteLootApplyPoll(state)
     C_Timer.After(INVITE_LOOT_APPLY_POLL_INTERVAL, Poll)
 end
 
-function PRT:ApplyInviteLootSettings()
+function PRT:ApplyInviteLootSettings(fromRetry)
     local store = GetConfig()
     local cfg = store.loot
     local zone = self:GetCurrentInviteLootZone()
@@ -1525,6 +1598,9 @@ function PRT:ApplyInviteLootSettings()
     -- one that is still waiting for delayed server acknowledgement.
     if self._inviteLootApplyState then
         ClearPendingInviteLootApply()
+    end
+    if self._inviteLootRetryState and not fromRetry then
+        ClearQueuedInviteLootRetry()
     end
 
     local method = lootMethodByValue[cfg.method] or lootMethodByValue.group
@@ -1586,19 +1662,8 @@ function PRT:ApplyInviteLootSettings()
         end
     end
     if not setLootMethod and not setLootThreshold then
+        ClearQueuedInviteLootRetry()
         PRT.Print("Configured loot settings are already active; no changes were needed.")
-        return true
-    end
-
-    if not setLootMethod then
-        local ok, err = SetInviteLootThresholdCompat(threshold)
-        if not ok then
-            PRT.Print("Unable to set loot threshold: " .. tostring(err))
-            return false
-        end
-        PRT.Print(("Applied %s with %s threshold."):format(
-            methodSummary,
-            (lootThresholdByValue[threshold] or lootThresholdByValue[1]).plainText))
         return true
     end
 
@@ -1612,15 +1677,44 @@ function PRT:ApplyInviteLootSettings()
         thresholdText = (lootThresholdByValue[threshold]
             or lootThresholdByValue[1]).plainText,
         methodSummary = methodSummary,
-        phase = "waiting_method",
-        deadline = Now() + INVITE_LOOT_APPLY_TIMEOUT,
+        retryUntilApplied = cfg.retryUntilApplied == true,
+        retryAnnounced = fromRetry == true,
     }
+
+    if not setLootMethod then
+        state.phase = "waiting_threshold"
+        state.deadline = Now() + INVITE_LOOT_APPLY_TIMEOUT
+        self._inviteLootApplyState = state
+        self:UpdateInviteToolsListeners()
+        local ok, err = SetInviteLootThresholdCompat(threshold)
+        if not ok then
+            ClearPendingInviteLootApply()
+            if cfg.retryUntilApplied then
+                QueueInviteLootRetry(state)
+                return true
+            end
+            PRT.Print("Unable to set loot threshold: " .. tostring(err))
+            return false
+        end
+        if ProcessPendingInviteLootApply() then return true end
+        PRT.Print(("Applying %s; waiting for the game to confirm the %s threshold."):format(
+            methodSummary, state.thresholdText))
+        SchedulePendingInviteLootApplyPoll(state)
+        return true
+    end
+
+    state.phase = "waiting_method"
+    state.deadline = Now() + INVITE_LOOT_APPLY_TIMEOUT
     self._inviteLootApplyState = state
     self:UpdateInviteToolsListeners()
 
     local ok, err = SetLootMethodCompat(method, masterName)
     if not ok then
         ClearPendingInviteLootApply()
+        if cfg.retryUntilApplied then
+            QueueInviteLootRetry(state)
+            return true
+        end
         PRT.Print("Unable to set loot method: " .. tostring(err))
         return false
     end
@@ -1723,6 +1817,34 @@ function PRT:CheckInviteLootPrompt(force)
     self:ShowInviteLootPrompt(zone)
 end
 
+function PRT:OpenInviteLootPromptManually()
+    local store = GetConfig()
+    local cfg = store.loot
+    local zone = self:GetCurrentInviteLootZone()
+    if store.enabled == false then
+        PRT.Print("Enable Invite & Loot automation before opening the loot-settings prompt.")
+        return false
+    end
+    if not cfg.enabled then
+        PRT.Print("Enable Loot Distribution Prompt before using /prt loot.")
+        return false
+    end
+    if not self:IsInviteLootZoneEnabled(zone, cfg) then
+        PRT.Print("The current zone is not enabled for the loot-settings prompt.")
+        return false
+    end
+    if not IsGrouped() or not IsGroupLeader() then
+        PRT.Print("You must be group leader to open the loot-settings prompt.")
+        return false
+    end
+    if cfg.onlyInRaid and (not IsInRaid or not IsInRaid()) then
+        PRT.Print("You must be in a raid group to open the configured loot-settings prompt.")
+        return false
+    end
+    self:ShowInviteLootPrompt(zone)
+    return true
+end
+
 function PRT:ResetInviteLootPromptState()
     self._inviteLootLastZoneKey = nil
     self._inviteLootWasLeader = false
@@ -1754,6 +1876,32 @@ local function GetLootItemLevel(itemLink)
     return select(4, getItemInfo(itemLink))
 end
 
+local BOSS_LOOT_UNIT_TOKENS = {
+    "target", "mouseover", "focus",
+    "boss1", "boss2", "boss3", "boss4", "boss5",
+}
+
+local function GetVisibleBossLootSources()
+    local sources = {}
+    if not UnitGUID then return sources end
+    for _, unit in ipairs(BOSS_LOOT_UNIT_TOKENS) do
+        local guid = UnitGUID(unit)
+        if guid and guid ~= "" then
+            local level = UnitLevel and UnitLevel(unit)
+            local classification = UnitClassification and UnitClassification(unit)
+            if level == -1 or classification == "worldboss" then
+                sources[guid] = true
+            end
+        end
+    end
+    return sources
+end
+
+function PRT:IsBossLootSource(sourceGuid)
+    return sourceGuid ~= nil
+        and GetVisibleBossLootSources()[sourceGuid] == true
+end
+
 function PRT:LinkLootToChat(linkCurrentWindow)
     local store = GetConfig()
     local cfg = store.lootToChat or {}
@@ -1768,13 +1916,20 @@ function PRT:LinkLootToChat(linkCurrentWindow)
 
     local items = {}
     local openedSources = {}
+    local bossSources = cfg.bossThresholdEnabled
+        and GetVisibleBossLootSources() or {}
+    local bossThreshold = tonumber(cfg.bossThreshold) or 3
+    if not lootThresholdByValue[bossThreshold] then bossThreshold = 3 end
     for slot = 1, GetNumLootItems() do
         local sourceGuid = GetLootSourceInfo and GetLootSourceInfo(slot)
         local sourceAlreadyLinked = sourceGuid and self._inviteLootChatSourceCache[sourceGuid]
         if linkCurrentWindow or not sourceAlreadyLinked then
             local itemLink = GetLootSlotLink(slot)
             local _, _, _, _, quality = GetLootSlotInfo(slot)
-            if itemLink and (linkCurrentWindow or (quality and quality >= 4)) then
+            local automaticThreshold = bossSources[sourceGuid]
+                and bossThreshold or 4
+            if itemLink and (linkCurrentWindow
+                    or (quality and quality >= automaticThreshold)) then
                 items[#items + 1] = {
                     link = itemLink,
                     itemLevel = cfg.includeItemLevel and GetLootItemLevel(itemLink) or nil,
@@ -2088,6 +2243,9 @@ function PRT:UpdateInviteToolsListeners()
         -- for clients that fire it before GetLootMethod reflects the change.
         frame:RegisterEvent("PARTY_LOOT_METHOD_CHANGED")
     end
+    if self._inviteLootRetryState then
+        frame:RegisterEvent("PLAYER_REGEN_ENABLED")
+    end
     if automationEnabled and cfg.lootToChat and cfg.lootToChat.enabled then
         frame:RegisterEvent("LOOT_OPENED")
     end
@@ -2143,6 +2301,8 @@ function PRT:InitInviteTools()
             end
         elseif event == "PARTY_LOOT_METHOD_CHANGED" then
             ProcessPendingInviteLootApply()
+        elseif event == "PLAYER_REGEN_ENABLED" then
+            PRT:RetryQueuedInviteLootApply()
         elseif event == "GUILD_ROSTER_UPDATE" then
             PRT:RequestAutoPromote()
         elseif event == "LOOT_OPENED" then

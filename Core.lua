@@ -5,7 +5,20 @@
 local addonName, PRT = ...
 _G.PugzRaidTools = PRT
 
-PRT.VERSION = "1.4.1"
+local function GetRuntimeAddonVersion()
+    if C_AddOns and C_AddOns.GetAddOnMetadata then
+        return C_AddOns.GetAddOnMetadata(addonName, "Version")
+    end
+    if GetAddOnMetadata then
+        return GetAddOnMetadata(addonName, "Version")
+    end
+end
+
+PRT.VERSION = GetRuntimeAddonVersion() or "1.4.2"
+
+function PRT:GetVersionDisplayText()
+    return "PugzRaidTools v" .. tostring(self.VERSION or "")
+end
 
 -- Media
 PRT.FONT       = "Interface\\AddOns\\PugzRaidTools\\Media\\Fonts\\PTSansNarrow.ttf"
@@ -59,6 +72,7 @@ PRT.MARK_ICONS = {
 ---------------------------------------------------------------------------
 PRT.C = {
     TITLE       = { 0.2, 1.0, 0.6 },
+    MENU_SEL    = { 36 / 255, 212 / 255, 120 / 255 }, -- #24D478
     SETTINGS_FONT = { 61 / 255, 1.0, 139 / 255 }, -- #3DFF8B
     GOLD        = { 1.0, 0.82, 0.0 },
     WHITE       = { 1.0, 1.0, 1.0 },
@@ -470,6 +484,8 @@ PRT.DEFAULTS = {
         checkDurability = true,
         allianceBlessingsOnly = true,
         dismissOnRightClick = true,
+        abbreviatePlayerLists = false,
+        playerListThreshold = 10,
         columnSettings = {},
         worldBuffValidity = {},
         sortMode = "classGroup",
@@ -530,6 +546,7 @@ PRT.DEFAULTS = {
             assignMasterLooter = false,
             masterLooter = "",
             threshold = 1,
+            retryUntilApplied = false,
             onlyInRaid = true,
             zones = {
                 naxxramas = false,
@@ -550,6 +567,8 @@ PRT.DEFAULTS = {
         lootToChat = {
             enabled = false,
             includeItemLevel = false,
+            bossThresholdEnabled = false,
+            bossThreshold = 3,
         },
         reinviteSnapshot = {
             createdAt = 0,
@@ -850,6 +869,107 @@ function PRT:CompileSortTarget(roster, raid)
     end
 
     return target, nil, report
+end
+
+-- Read-only UI preflight for a Raid Groups roster against the live raid.
+-- CompileSortTarget remains authoritative for whether a sort can start; this
+-- view adds complete issue lists and outside-composition players so every
+-- action surface can explain the same result before the click.
+function PRT:GetRaidGroupsPreflight(roster, raid)
+    roster = roster or {}
+    raid = raid or ((IsInRaid and IsInRaid()) and self.GetRaidRoster() or {})
+
+    local target, targetError = self:CompileSortTarget(roster, raid)
+    local preflight = {
+        blocked = target == nil,
+        blockReason = targetError,
+        hardError = false,
+        noActionable = false,
+        severity = "clean",
+        presentResolvedCount = 0,
+        unresolved = {},
+        missing = {},
+        extra = {},
+        invalidExact = {},
+    }
+
+    local represented = {}
+    for index = 1, 40 do
+        local raw = self.Trim(roster[index] or "")
+        if raw ~= "" then
+            local group = math.floor((index - 1) / 5) + 1
+            local slot = ((index - 1) % 5) + 1
+            local key = self:GetRosterSlotIdentityKey(roster, index)
+            if key == nil then
+                preflight.unresolved[#preflight.unresolved + 1] = {
+                    raw = raw,
+                    group = group,
+                    slot = slot,
+                }
+            elseif key ~= "" and not represented[key] then
+                represented[key] = true
+                local member = raid[key]
+                if member then
+                    preflight.presentResolvedCount =
+                        preflight.presentResolvedCount + 1
+                else
+                    preflight.missing[#preflight.missing + 1] = {
+                        raw = raw,
+                        key = key,
+                        group = group,
+                        slot = slot,
+                    }
+                end
+            end
+        end
+    end
+
+    for key, info in pairs(raid) do
+        if not represented[key] then
+            preflight.extra[#preflight.extra + 1] = {
+                key = key,
+                name = info.displayName or self:MakeCharacterFullName(
+                    info.baseName or info.name, info.realm or "", true),
+                group = info.subgroup or 0,
+                classFile = info.classFile,
+            }
+        end
+    end
+    table.sort(preflight.extra, function(a, b)
+        if a.group ~= b.group then return a.group < b.group end
+        return tostring(a.name) < tostring(b.name)
+    end)
+
+    if roster._prtRealmVersion ~= nil then
+        local duplicatesBySlot = self:FindDuplicateRosterSlots(roster)
+        local seenEntries = {}
+        for index = 1, 40 do
+            local duplicate = duplicatesBySlot[index]
+            if duplicate and not seenEntries[duplicate] then
+                seenEntries[duplicate] = true
+                preflight.invalidExact[#preflight.invalidExact + 1] = duplicate
+            end
+        end
+        table.sort(preflight.invalidExact, function(a, b)
+            return (a.slots[1] or 0) < (b.slots[1] or 0)
+        end)
+    end
+
+    local unsupported = roster._prtRealmVersion ~= nil
+        and roster._prtRealmVersion ~= 1
+    preflight.noActionable = preflight.presentResolvedCount == 0
+        and #preflight.invalidExact == 0 and not unsupported
+    preflight.hardError = #preflight.invalidExact > 0 or unsupported
+        or (preflight.blocked and not preflight.noActionable)
+
+    if preflight.hardError then
+        preflight.severity = "error"
+    elseif preflight.blocked or #preflight.unresolved > 0
+        or #preflight.missing > 0 or #preflight.extra > 0 then
+        preflight.severity = "warning"
+    end
+
+    return preflight
 end
 
 function PRT:ReportSortTargetSkips(report)
@@ -1828,6 +1948,10 @@ SlashCmdList["PRT"] = function(msg)
             PRT.Print("Raid Invites is disabled.")
         end
     elseif msg == "loot" then
+        if PRT.OpenInviteLootPromptManually then
+            PRT:OpenInviteLootPromptManually()
+        end
+    elseif msg == "link loot" or msg == "loot link" then
         if PRT.LinkLootToChat then PRT:LinkLootToChat(true) end
     elseif msg == "ban" then
         PRT.Print("Usage: /prt ban PlayerName or PlayerName-Realm")
@@ -2077,7 +2201,8 @@ SlashCmdList["PRT"] = function(msg)
         PRT.Print("  /prt banlist - List players blocked from keyword invites")
         PRT.Print("  /prt invites on - Enable queued party-to-raid invites")
         PRT.Print("  /prt invites off - Disable queued party-to-raid invites")
-        PRT.Print("  /prt loot - Link items from the current loot window to chat")
+        PRT.Print("  /prt loot - Reopen the configured loot-settings prompt")
+        PRT.Print("  /prt link loot - Link items from the current loot window to chat")
         PRT.Print("  /prt disband - Save the raid roster and disband")
         PRT.Print("  /prt reinv - Invite players from the last disband snapshot")
         PRT.Print("  /prt sortlog - Open the position sort event log")

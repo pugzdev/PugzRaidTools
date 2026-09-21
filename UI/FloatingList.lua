@@ -11,6 +11,7 @@ local LINE_H = 20
 local PAD    = 4
 local MIN_WIDTH = 70
 local MIN_ROW_HEIGHT = 14
+local floatingTooltipTitleFont
 
 local function IsMouseOverFrame(frame)
     if not frame or not frame:IsShown() then return false end
@@ -41,6 +42,31 @@ local COL_OFF_HOV = { 0.62, 0.15, 0.15, 0.95 }
 ---------------------------------------------------------------------------
 -- Tooltip (shared)
 ---------------------------------------------------------------------------
+local function RestoreFloatingTooltipTitleFont()
+    local saved = floatingTooltipTitleFont
+    floatingTooltipTitleFont = nil
+    if not saved or not saved.line or not saved.line.SetFont then return end
+    saved.line:SetFont(saved.path, saved.size, saved.flags)
+end
+
+local function StyleFloatingTooltipTitle()
+    RestoreFloatingTooltipTitleFont()
+    local tooltipName = GameTooltip.GetName and GameTooltip:GetName()
+    local line = GameTooltip.TextLeft1
+        or (tooltipName and _G[tooltipName .. "TextLeft1"])
+    if not line or not line.GetFont or not line.SetFont then return end
+
+    local path, size, flags = line:GetFont()
+    floatingTooltipTitleFont = {
+        line = line,
+        path = path,
+        size = size,
+        flags = flags,
+    }
+    line:SetFont(path or PRT.FONT, (tonumber(size) or PRT.FONT_SIZE) + 2,
+        "OUTLINE")
+end
+
 local function AddSortInstructions()
     GameTooltip:AddLine(
         "|cff59ff8cLeft Click|r - Fast group sort.",
@@ -120,71 +146,179 @@ local function ShowPositionedTooltip()
     PositionTooltipOutsideList()
 end
 
+local function GetUnsavedEditorChanges(compName)
+    local panel = PRT.groupsPanel
+    if not panel or panel.selectedComp ~= compName
+        or not panel.IsManualSaveDirty or not panel:IsManualSaveDirty() then
+        return nil
+    end
+    if panel.GetUnsavedRosterChanges then
+        return panel:GetUnsavedRosterChanges()
+    end
+    return {}
+end
+
+local function AddUnsavedEditorWarning(changes)
+    GameTooltip:AddLine("Unsaved editor changes", PRT.C.YELLOW[1],
+        PRT.C.YELLOW[2], PRT.C.YELLOW[3])
+    GameTooltip:AddLine(
+        "This row will sort using the last saved version.", 1, 1, 1, true)
+    if #changes > 0 then
+        GameTooltip:AddLine(("%d visible roster %s will not be included.")
+            :format(#changes, #changes == 1 and "change" or "changes"),
+            1, 1, 1, true)
+    else
+        GameTooltip:AddLine(
+            "Visible roster matching changes will not be included.",
+            1, 1, 1, true)
+    end
+    GameTooltip:AddLine("Save in Raid Groups to include them.",
+        PRT.C.TITLE[1], PRT.C.TITLE[2], PRT.C.TITLE[3], true)
+    GameTooltip:AddLine(" ")
+end
+
+local function SlotLocation(index)
+    return ("G%d S%d"):format(
+        math.floor((index - 1) / 5) + 1,
+        ((index - 1) % 5) + 1)
+end
+
+local function AddDuplicateErrors(duplicates)
+    GameTooltip:AddLine(
+        "The same exact player is assigned to more than one cell.",
+        PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3], true)
+    local limit = math.min(#duplicates, 4)
+    for i = 1, limit do
+        local duplicate = duplicates[i]
+        local locations = {}
+        for _, index in ipairs(duplicate.slots or {}) do
+            locations[#locations + 1] = SlotLocation(index)
+        end
+        GameTooltip:AddLine(("%s: %s"):format(
+            duplicate.displayName or duplicate.key or "Player",
+            table.concat(locations, ", ")),
+            PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3], true)
+    end
+    if #duplicates > limit then
+        GameTooltip:AddLine(("...and %d more duplicate assignments.")
+            :format(#duplicates - limit),
+            PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3], true)
+    end
+end
+
+local function AddPreflightDetails(preflight)
+    if preflight.hardError then
+        GameTooltip:AddLine("Sort blocked", PRT.C.RED[1],
+            PRT.C.RED[2], PRT.C.RED[3])
+        if #preflight.invalidExact > 0 then
+            AddDuplicateErrors(preflight.invalidExact)
+        elseif preflight.blockReason then
+            GameTooltip:AddLine(preflight.blockReason, PRT.C.RED[1],
+                PRT.C.RED[2], PRT.C.RED[3], true)
+        end
+    elseif preflight.noActionable then
+        GameTooltip:AddLine("Nothing can be sorted right now.",
+            PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3])
+        if preflight.blockReason then
+            GameTooltip:AddLine(preflight.blockReason, 1, 1, 1, true)
+        end
+    elseif preflight.severity == "warning" then
+        GameTooltip:AddLine("Best-effort sort", PRT.C.GOLD[1],
+            PRT.C.GOLD[2], PRT.C.GOLD[3])
+        GameTooltip:AddLine(("%d resolved present roster %s will be sorted.")
+            :format(preflight.presentResolvedCount,
+                preflight.presentResolvedCount == 1 and "player" or "players"),
+            1, 1, 1, true)
+    else
+        GameTooltip:AddLine("All raid members match this composition.",
+            0.6, 1, 0.6)
+    end
+
+    if #preflight.unresolved > 0 then
+        GameTooltip:AddLine(("%d unresolved roster %s will be skipped:")
+            :format(#preflight.unresolved,
+                #preflight.unresolved == 1 and "cell" or "cells"),
+            PRT.C.GOLD[1], PRT.C.GOLD[2], PRT.C.GOLD[3], true)
+        local limit = math.min(#preflight.unresolved, 6)
+        for i = 1, limit do
+            local entry = preflight.unresolved[i]
+            GameTooltip:AddLine(("%s (G%d S%d)"):format(
+                entry.raw, entry.group, entry.slot), 1, 1, 1, true)
+        end
+        if #preflight.unresolved > limit then
+            GameTooltip:AddLine(("...and %d more.")
+                :format(#preflight.unresolved - limit),
+                PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3], true)
+        end
+        GameTooltip:AddLine(
+            "Corresponding live players are unconstrained and may move as collateral.",
+            PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3], true)
+    end
+
+    if #preflight.missing > 0 or #preflight.extra > 0 then
+        GameTooltip:AddDoubleLine("Missing from raid", "Not in Roster",
+            PRT.C.RED[1], PRT.C.RED[2], PRT.C.RED[3],
+            PRT.C.YELLOW[1], PRT.C.YELLOW[2], PRT.C.YELLOW[3])
+        local longest = math.max(#preflight.missing, #preflight.extra)
+        local cap = math.min(longest, 12)
+        for i = 1, cap do
+            local missing = preflight.missing[i]
+            local extra = preflight.extra[i]
+            local left = missing and ("%s (G%d S%d)"):format(
+                missing.raw, missing.group, missing.slot) or "-"
+            local right = extra and ("%s (G%d)"):format(
+                extra.name, extra.group) or "-"
+            local rr, rg, rb = 1, 1, 1
+            if extra then
+                rr, rg, rb = PRT.GetClassColor(extra.classFile)
+            end
+            GameTooltip:AddDoubleLine(left, right, 1, 1, 1, rr, rg, rb)
+        end
+        if longest > cap then
+            GameTooltip:AddDoubleLine("...", "...",
+                0.5, 0.5, 0.5, 0.5, 0.5, 0.5)
+        end
+        if #preflight.extra > 0 then
+            GameTooltip:AddLine(
+                "Outside players are unconstrained and may move as collateral.",
+                PRT.C.GRAY[1], PRT.C.GRAY[2], PRT.C.GRAY[3], true)
+        end
+    end
+end
+
 local function ShowCompTooltip(btn, compName)
     local comp = PRT:GetComp(compName)
     if not comp then return end
+    local unsavedChanges = GetUnsavedEditorChanges(compName)
+    local raid = (IsInRaid and IsInRaid()) and PRT.GetRaidRoster() or {}
+    local preflight = PRT:GetRaidGroupsPreflight(comp.roster, raid)
 
-    local rosterSet, pretty = {}, {}
-    for index, w in ipairs(comp.roster or {}) do
-        local k = PRT:GetRosterSlotIdentityKey(comp.roster, index)
-        if k and k ~= "" then
-            rosterSet[k] = true
-            if not pretty[k] then pretty[k] = PRT.Trim(w) end
-        elseif k == nil then
-            pretty["unresolved:" .. index] = PRT.Trim(w) .. " (server unresolved)"
-        end
-    end
-
-    local raid = PRT.GetRaidRoster()
-
-    local missing, extra = {}, {}
-    for k, p in pairs(pretty) do
-        if not raid[k] then missing[#missing + 1] = p end
-    end
-    for k, info in pairs(raid) do
-        if not rosterSet[k] then
-            extra[#extra + 1] = {
-                name = info.displayName or info.name,
-                group = info.subgroup or 0,
-                classFile = info.classFile,
-            }
-        end
-    end
-    table.sort(missing)
-    table.sort(extra, function(a, b)
-        if a.group ~= b.group then return a.group < b.group end
-        return a.name < b.name
-    end)
-
+    RestoreFloatingTooltipTitleFont()
     GameTooltip:SetOwner(btn, "ANCHOR_NONE")
     GameTooltip:ClearLines()
-
-    if #missing == 0 and #extra == 0 then
+    if preflight.severity == "error" then
+        GameTooltip:AddLine(compName, PRT.C.RED[1],
+            PRT.C.RED[2], PRT.C.RED[3])
+    elseif unsavedChanges then
+        GameTooltip:AddLine(compName, PRT.C.YELLOW[1],
+            PRT.C.YELLOW[2], PRT.C.YELLOW[3])
+    elseif preflight.severity == "warning" then
+        GameTooltip:AddLine(compName, PRT.C.GOLD[1],
+            PRT.C.GOLD[2], PRT.C.GOLD[3])
+    else
         GameTooltip:AddLine(compName, 1, 1, 1)
-        GameTooltip:AddLine("All roster members present.", 0.6, 1, 0.6)
-        AddSortInstructions()
-        ShowPositionedTooltip()
-        return
     end
 
-    GameTooltip:AddLine(compName, 1, 1, 1)
-    GameTooltip:AddDoubleLine("Missing", "Not in Roster", 1, 0.3, 0.3, 1, 1, 0.3)
-    local longest = math.max(#missing, #extra)
-    local cap = math.min(longest, 12)
-    for i = 1, cap do
-        local left = missing[i] or "-"
-        local right = "-"
-        local rr, rg, rb = 1, 1, 1
-        if extra[i] then
-            right = ("%s (G%d)"):format(extra[i].name, extra[i].group)
-            rr, rg, rb = PRT.GetClassColor(extra[i].classFile)
-        end
-        GameTooltip:AddDoubleLine(left, right, 1, 1, 1, rr, rg, rb)
+    if unsavedChanges then
+        AddUnsavedEditorWarning(unsavedChanges)
     end
-    if longest > cap then
-        GameTooltip:AddDoubleLine("...", "...", 0.5, 0.5, 0.5, 0.5, 0.5, 0.5)
+    if unsavedChanges then
+        GameTooltip:AddLine("Saved composition preflight", PRT.C.TITLE[1],
+            PRT.C.TITLE[2], PRT.C.TITLE[3])
     end
+    AddPreflightDetails(preflight)
     AddSortInstructions()
+    StyleFloatingTooltipTitle()
     ShowPositionedTooltip()
 end
 
@@ -382,6 +516,22 @@ function PRT:InitFloatingList()
 
     self.floatingFrame = f
 
+    local rosterRefresh = CreateFrame("Frame")
+    rosterRefresh:RegisterEvent("GROUP_ROSTER_UPDATE")
+    rosterRefresh:RegisterEvent("RAID_ROSTER_UPDATE")
+    rosterRefresh:RegisterEvent("PLAYER_ENTERING_WORLD")
+    rosterRefresh:SetScript("OnEvent", function(self)
+        if self._pending then return end
+        self._pending = true
+        C_Timer.After(0.05, function()
+            self._pending = false
+            if PRT.floatingFrame and PRT.RefreshFloatingList then
+                PRT:RefreshFloatingList()
+            end
+        end)
+    end)
+    f.rosterRefreshFrame = rosterRefresh
+
     self:RefreshFloatingList()
     self:UpdateFloatingList()
 end
@@ -423,6 +573,7 @@ function PRT:RefreshFloatingList()
         PRT.C.SETTINGS_FONT[2], PRT.C.SETTINGS_FONT[3]
     if fl.fontColor then fcr, fcg, fcb = fl.fontColor[1], fl.fontColor[2], fl.fontColor[3] end
     local maxW = 60
+    local raid = (IsInRaid and IsInRaid()) and self.GetRaidRoster() or {}
 
     fl.width = textWidth
     fl.textWidth = textWidth
@@ -447,6 +598,7 @@ function PRT:RefreshFloatingList()
                 ShowCompTooltip(self, self.compName)
             end)
             btn:HookScript("OnLeave", function()
+                RestoreFloatingTooltipTitleFont()
                 GameTooltip:Hide()
             end)
             btn:SetScript("OnClick", function(self, button)
@@ -485,7 +637,21 @@ function PRT:RefreshFloatingList()
         btn.compName = compName
         btn.label:SetFont(PRT.FONT, fontSize, outline)
         btn.label:SetText(compName)
-        btn.label:SetTextColor(fcr, fcg, fcb, 1)
+        local comp = self:GetComp(compName)
+        local preflight = self:GetRaidGroupsPreflight(
+            comp and comp.roster or {}, raid)
+        if preflight.severity == "error" then
+            btn.label:SetTextColor(PRT.C.RED[1], PRT.C.RED[2],
+                PRT.C.RED[3], 1)
+        elseif GetUnsavedEditorChanges(compName) then
+            btn.label:SetTextColor(PRT.C.YELLOW[1], PRT.C.YELLOW[2],
+                PRT.C.YELLOW[3], 1)
+        elseif preflight.severity == "warning" then
+            btn.label:SetTextColor(PRT.C.GOLD[1], PRT.C.GOLD[2],
+                PRT.C.GOLD[3], 1)
+        else
+            btn.label:SetTextColor(fcr, fcg, fcb, 1)
+        end
 
         local w = btn.label:GetStringWidth() + 12
         if w > maxW then maxW = w end

@@ -22,6 +22,24 @@ While grouped, group rearrangement and player marking require raid leader or rai
 
 ## Recent Release Highlights
 
+### 1.4.2 — Raid Groups Usability
+
+Version 1.4.2 delivers a user-friendliness pass for Raid Groups without changing exact identity or best-effort sorting behavior.
+
+*   A new step-by-step **Help** guide takes you from planning a spreadsheet to importing, correcting names, saving and sorting the raid, then reusing your layouts for automatic swaps and Smart Assign. Complete spreadsheet examples show every import shape, with or without server names, and single or multiple named rosters.
+*   Named roster imports now ask whether to overwrite an existing composition or import under a different name. Multi-roster pastes resolve each collision separately before any saved roster is changed.
+*   Raid Check player lists hide routine server suffixes, retain them for same-name collisions, and can abbreviate long lists at a configurable limit.
+*   Loot setup can keep retrying one rejected or unconfirmed Apply request until it succeeds, `/prt loot` reopens its prompt, and Loot to Chat can announce lower-quality drops from recognized boss sources.
+*   **Auto-Save Changes** clearly identifies the automatic saving option. When it is off and the editor has unsaved changes, **Apply Groups** turns amber and **Save Changes** gently pulses to draw attention to the save action.
+*   **Auto-Accept Unspecified Servers** uses a positive checked state: a unique live match is accepted automatically, while ambiguous names still require an explicit choice and `Name-Server` entries remain exact.
+*   Tooltips explain that Apply will use the saved roster and show the pending group-slot changes before they are saved.
+*   The matching Floating Raid Group List row turns yellow and its tooltip explains that a click still uses the last saved roster until those edits are saved.
+*   Applying remains non-blocking and reports when visible unsaved changes were excluded from the saved composition used for sorting.
+*   **Apply Groups** and floating composition names turn amber for a best-effort sort with unresolved cells, missing players, or players outside the composition; their tooltips identify the affected names and explain any skipped or unconstrained players.
+*   An exact player assigned to more than one cell is a red blocking error on the cells, **Apply Groups**, and the saved floating composition. While that duplicate is still unsaved, **Save Changes** pulses amber/red and warns that saving would persist the invalid roster.
+*   Related namesake warnings distinguish a valid confirmed exact assignment with a subdued gold advisory from the yellow unresolved cell that still needs action; both tooltips cross-reference the affected group slots.
+*   **Set Current Roster** now explains that it captures the live raid's exact group layout and full server identities without moving anyone.
+
 ### 1.4.1 — Best-Effort Raid Sorting
 
 Version 1.4.1 lets useful group sorting continue while a roster is still being filled or corrected.
@@ -92,6 +110,7 @@ Build and save complete 40-player raid compositions in an eight-group roster edi
 *   Shift-click a live player to toggle assistant status, or Ctrl-click to toggle main-tank assignment; both shortcuts are unavailable during combat.
 *   Import multiple named compositions from a single text block.
 *   Export one roster in selectable eight-column, paired-group, single-column, or PRT format, or export every saved roster with composition headers.
+*   Open the built-in **Help** window for practical import examples and explanations of connected sorting and automation workflows.
 *   Automatically refresh roster information as players join or leave the raid.
 
 ### Floating Raid Group List
@@ -100,7 +119,10 @@ The optional floating list keeps saved compositions accessible without opening t
 
 *   Left-click a composition for a fast group swap.
 *   Shift + left-click to force exact raid positions. (Warning - Can cause lag for yourself and other players.)
-*   Hover over a composition to compare it with the current raid.
+*   A yellow composition name means its open Raid Groups editor has unsaved manual changes; the row continues to sort the last saved version until those edits are saved.
+*   An amber composition name means the saved roster can be sorted only on a best-effort basis because it has unresolved cells, missing players, or live players outside the composition.
+*   A red composition name means the saved roster is invalid and sorting is blocked, such as when the same exact player occupies multiple cells.
+*   Hover over a composition to compare it with the current raid, see affected names and group slots, and understand which players may be skipped or moved as collateral.
 *   Toggle Group Auto Swap and Player Auto Marking directly from the floating window.
 *   Optionally place the active overall PRT Profile selector at the top of the list.
 *   Configure exact width, row height, font size, scale, background opacity, long-name handling, and mouse-over-only visibility.
@@ -213,19 +235,19 @@ Configure a preferred loot method and quality threshold, including **Common (Whi
 
 Custom zones can also be added by name or captured directly from the player's current location.
 
-When you enter a selected zone as group leader—or receive leadership while already there—PRT shows a one-time comparison of the configured and current loot settings. Choose **Apply Configured** to apply the preset or **Keep Current Settings** to leave the group unchanged. PRT does not continuously enforce the preset, so manual changes made afterward are preserved.
+When you enter a selected zone as group leader—or receive leadership while already there—PRT shows a one-time comparison of the configured and current loot settings. Choose **Apply Configured** to apply the preset or **Keep Current Settings** to leave the group unchanged. Use `/prt loot` to reopen that prompt. PRT does not continuously enforce the preset, so manual changes made afterward are preserved.
 
-The prompt can be restricted to raid groups. When Master Loot is configured, automatic master-looter assignment is optional. Enable it and enter a character to assign that player. With assignment disabled, PRT preserves an existing master looter; if Master Loot is not active yet, PRT uses the group leader because Classic requires a master looter. PRT waits until the requested method and master looter are observable before applying the threshold. Method, master-looter, and threshold changes are compared independently so an unchanged Master Loot setting is not reapplied.
+The prompt can be restricted to raid groups. When Master Loot is configured, automatic master-looter assignment is optional. Enable it and enter a character to assign that player. With assignment disabled, PRT preserves an existing master looter; if Master Loot is not active yet, PRT uses the group leader because Classic requires a master looter. PRT waits until the requested method, master looter and threshold are observable. Method, master-looter, and threshold changes are compared independently so an unchanged setting is not reapplied. An optional retry keeps only the confirmed Apply request and tries again every two seconds whenever the game rejects or does not confirm it. It does not depend on detecting which raid member is in combat, and it stops after success or if the relevant preset, zone, raid eligibility, or leadership changes.
 
 ### Loot to Chat
 
-Automatically link Epic-or-higher items from raid loot windows to the appropriate group chat once per loot source. Item level can be included after each link. A typical message looks like:
+Automatically link Epic-or-higher items from raid loot windows to the appropriate group chat once per loot source. A separate configurable threshold can include lower-quality loot attributed to a skull-level or world-boss source while other raid loot remains Epic or higher. Item level can be included after each link. A typical message looks like:
 
 ```text
 1: [Item Link] (76)
 ```
 
-Use `/prt loot` to link every item in the currently open loot window manually, regardless of quality.
+Use `/prt link loot` to link every item in the currently open loot window manually, regardless of quality.
 
 ## Raid Check
 
@@ -263,7 +285,7 @@ Common reports include:
 *   `!kings`, `!might`, `!wisdom`, and `!light`
 *   `!durability`, `!jchill`, and the protection-potion checks
 
-Use `/prt commands` for the complete command and alias list. The same list is available from the Raid Check configuration tab. Long reports are divided into multiple chat messages automatically.
+Use `/prt commands` for the complete command and alias list. The same list is available from the Raid Check configuration tab. Reports normally show character names without server suffixes; if the raid contains two characters with the same name, both retain their servers. Long reports are divided into multiple chat messages automatically, and the Raid Check tab can optionally shorten player lists above a configurable limit while retaining the full count.
 
 The live Raid Check window also supports click reports. Click a Player or category column to post its current status to group chat. Shift-click World Buffs for the one-hour-buff count, Shift-click DF BS for its player list, or Shift-click an individual class-buff cell for that player's exact status and raid position. Potion reports are selected by clicking the specific displayed potion icon. Test Preview click reports remain local so randomized preview data cannot be posted to a raid.
 
@@ -333,7 +355,8 @@ Manual feature toggles also produce a focused on-screen status notification.
 | <code>/prt banlist</code> |List characters blocked from keyword invites.         |
 | <code>/prt invites on</code> |Enable queued party-to-raid invites.                   |
 | <code>/prt invites off</code> |Disable queued party-to-raid invites.                  |
-| <code>/prt loot</code> |Link every item in the current loot window to group chat. |
+| <code>/prt loot</code> |Reopen the configured loot-settings prompt.             |
+| <code>/prt link loot</code> |Link every item in the current loot window to group chat. |
 | <code>/prt disband</code> |Save the current group roster and disband it.          |
 | <code>/prt reinv</code> |Invite characters from the last disband snapshot.      |
 | <code>/prt reset</code> |Reset Group Auto Swap kill counters.                  |
